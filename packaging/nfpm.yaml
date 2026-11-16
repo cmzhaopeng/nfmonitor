@@ -9,7 +9,7 @@ priority: optional
 maintainer: zhaopeng
 vendor: zhaopeng
 homepage: https://github.com/cmzhaopeng/nfmonitor
-license: Proprietary
+license: MIT
 description: |
   nfmonitor — 本机网络流量与规则查看
   图形化展示网卡、路由与策略路由、代理与 TUN、nftables / iptables / ufw 规则、
