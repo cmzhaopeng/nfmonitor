@@ -1,0 +1,7 @@
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+:ufw-user-input - [0:0]
+[1100:66000] -A ufw-user-input -p tcp -m tcp --dport 22 -m comment --comment ssh -j ACCEPT
+COMMIT

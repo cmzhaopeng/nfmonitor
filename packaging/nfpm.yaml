@@ -1,0 +1,57 @@
+# nfpm 打包描述：deb / rpm 共用。变量由 scripts/package.sh 用 sed 展开。
+name: nfmonitor
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: "1"
+section: net
+priority: optional
+maintainer: zhaopeng
+vendor: zhaopeng
+homepage: https://github.com/cmzhaopeng/nfmonitor
+license: Proprietary
+description: |
+  nfmonitor — 本机网络流量与规则查看
+  图形化展示网卡、路由与策略路由、代理与 TUN、nftables / iptables / ufw 规则、
+  套接字与按进程流量。只读，不修改任何系统状态。
+contents:
+  - src: ./build/bin/nfmonitor
+    dst: /usr/bin/nfmonitor
+    file_info:
+      mode: 0755
+  - src: ./packaging/nfmonitor.desktop
+    dst: /usr/share/applications/nfmonitor.desktop
+    file_info:
+      mode: 0644
+  - src: ./packaging/nfmonitor.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/nfmonitor.svg
+    file_info:
+      mode: 0644
+  - src: ./packaging/org.nfmonitor.helper.policy
+    dst: /usr/share/polkit-1/actions/org.nfmonitor.helper.policy
+    file_info:
+      mode: 0644
+overrides:
+  deb:
+    depends:
+      - libgtk-3-0t64 | libgtk-3-0
+      - libwebkit2gtk-4.1-0
+      - iproute2
+    recommends:
+      - nftables
+      - iptables
+      - pkexec | policykit-1
+  rpm:
+    depends:
+      - libgtk-3.so.0()(64bit)
+      - libwebkit2gtk-4.1.so.0()(64bit)
+      - iproute
+    recommends:
+      - nftables
+      - iptables
+      - polkit
+rpm:
+  group: Applications/System
+  compression: xz
+deb:
+  compression: xz

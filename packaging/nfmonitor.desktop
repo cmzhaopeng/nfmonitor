@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=nfmonitor
+Name[zh_CN]=nfmonitor 网络流量与规则
+GenericName=Network Traffic & Firewall Viewer
+GenericName[zh_CN]=网络流量与防火墙查看
+Comment=View interfaces, routing, proxies, TUN devices and nftables/iptables/ufw rules
+Comment[zh_CN]=查看本机网卡、路由、代理、TUN 以及 nftables / iptables / ufw 规则
+Exec=nfmonitor
+Icon=nfmonitor
+Terminal=false
+Categories=System;Network;Monitor;
+Keywords=network;firewall;nftables;iptables;ufw;proxy;tun;route;网络;防火墙;
+StartupWMClass=nfmonitor
