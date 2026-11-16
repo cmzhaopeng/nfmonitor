@@ -25,7 +25,7 @@ type Server struct {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	s.apps = &netinfo.AppTracker{Sample: s.sockets}
+	s.apps = &netinfo.AppTracker{Sample: s.sockets, UDP: s.udpStat}
 	get := func(path string, fn func(r *http.Request) (any, error)) {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) { reply(w, fn, r) })
 	}
@@ -100,6 +100,15 @@ func (s *Server) sockets() ([]netinfo.Socket, error) {
 	}
 	netinfo.EnrichSockets(socks)
 	return socks, nil
+}
+
+// udpStat 取 UDP 流量增量；探针要 root，没授权时返回 ErrNotElevated。
+func (s *Server) udpStat() (netinfo.UDPStat, error) {
+	out, err := s.Priv.Run("udpstat")
+	if err != nil {
+		return netinfo.UDPStat{}, err
+	}
+	return netinfo.ParseUDPStat(out), nil
 }
 
 func reply(w http.ResponseWriter, fn func(r *http.Request) (any, error), r *http.Request) {

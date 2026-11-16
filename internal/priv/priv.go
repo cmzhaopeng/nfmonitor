@@ -36,6 +36,7 @@ func ServeHelper(in io.Reader, out io.Writer) error {
 	if err := enc.Encode(response{Ready: true}); err != nil {
 		return err
 	}
+	defer netinfo.StopUDPMonitor()
 	sc := bufio.NewScanner(in)
 	for sc.Scan() {
 		var req request

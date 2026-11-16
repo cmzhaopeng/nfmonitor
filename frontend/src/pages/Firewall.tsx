@@ -143,7 +143,7 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
         <div className="banner warn">
           <div>
             <b>读取防火墙规则需要 root 权限</b>
-            <div className="dim">授权后会以 root 启动一个只读助手，仅执行固定的查看命令（nft list ruleset、iptables-save、ufw status、ss），不修改任何规则；关闭程序即退出。</div>
+            <div className="dim">授权后会以 root 启动一个只读助手，仅执行固定的查看命令（nft list ruleset、iptables-save、ufw status、ss），以及「应用」页统计 UDP 流量用的 bpftrace 只读探针，不修改任何规则；关闭程序即退出。</div>
             {authErr && <div style={{color: 'var(--crit)', marginTop: 4}}>{authErr}</div>}
             {data.errors.nft && !/尚未授权/.test(data.errors.nft) && <div style={{color: 'var(--crit)', marginTop: 4}}>{data.errors.nft}</div>}
           </div>

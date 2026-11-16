@@ -20,7 +20,7 @@ import (
 var assets embed.FS
 
 // version 可在构建时用 -ldflags "-X main.version=1.2.3" 覆盖。
-var version = "0.2.0"
+var version = "0.3.0"
 
 func main() {
 	if len(os.Args) > 1 {

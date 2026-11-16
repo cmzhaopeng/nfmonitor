@@ -5,10 +5,10 @@
   <vendor>nfmonitor</vendor>
   <!-- 只匹配 `pkexec /usr/bin/nfmonitor helper`：只读助手，见 internal/priv。 -->
   <action id="org.nfmonitor.helper">
-    <description>Read firewall rules and socket owners</description>
-    <description xml:lang="zh_CN">读取防火墙规则与套接字归属</description>
-    <message>nfmonitor needs administrator rights to read firewall rules (read-only)</message>
-    <message xml:lang="zh_CN">nfmonitor 需要管理员权限来读取防火墙规则（只读，不做任何修改）</message>
+    <description>Read firewall rules, socket owners and UDP traffic counters</description>
+    <description xml:lang="zh_CN">读取防火墙规则、套接字归属与 UDP 流量计数</description>
+    <message>nfmonitor needs administrator rights to read firewall rules and per-process UDP traffic (read-only)</message>
+    <message xml:lang="zh_CN">nfmonitor 需要管理员权限来读取防火墙规则和各进程的 UDP 流量（只读，不做任何修改）</message>
     <icon_name>nfmonitor</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>

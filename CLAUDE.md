@@ -22,7 +22,7 @@ scripts/package.sh               # deb + rpm → dist/（含 .desktop、图标�
 ## 架构
 
 - `internal/netinfo/` 采集层，全部通过解析系统工具输出：`ip -j`（网卡/路由）、`ip rule`、`/proc/net/dev`（速率）、`ss -O -tunapi`（套接字 + TCP 字节数）、`nft -a list ruleset`（文本解析，见 `firewall.go`）、`iptables-save`、`ufw status`。
-- `internal/netinfo/apps.go` 按应用统计：`AppTracker` 每 2 秒采样一次套接字（有人查询时才采），把 TCP 字节增量按「应用 × 网卡」累加；网卡由套接字本地地址反查，回环连接会标出对端是本机哪个程序（`lo → gost`）。UDP 没有逐套接字计数，不计流量。
+- `internal/netinfo/apps.go` 按应用统计：`AppTracker` 每 2 秒采样一次套接字（有人查询时才采），把 TCP 字节增量按「应用 × 网卡」累加；网卡由套接字本地地址反查，回环连接会标出对端是本机哪个程序（`lo → gost`）。UDP 没有逐套接字计数：授权后由 helper 常驻一个 `bpftrace` 探针（`udp.go`，kprobe `udp_sendmsg` / `udpv6_sendmsg` / `skb_consume_udp`，脚本固定），每秒按「进程 × 端口 × 网卡」输出载荷字节增量，`AppTracker` 经白名单命令 `udpstat` 取走并累加；30 秒没人取数探针自动退出。未授权或没装 bpftrace 时只有 TCP。
 - `internal/priv/` 提权：GUI 始终是普通用户；`pkexec nfmonitor helper` 起一个 root 子进程，经 stdin/stdout 按行 JSON 通信，**只接受 `netinfo.PrivCommands` 白名单里的命令名，参数固定**。新增需要 root 的命令只能往这个表里加只读命令。安装包带的 polkit 策略（`packaging/org.nfmonitor.helper.policy`）只匹配 `/usr/bin/nfmonitor helper`。
 - `internal/api/` 一个 `http.Handler`，桌面版挂在 Wails `AssetServer.Handler` 上，`serve` 模式挂在普通 HTTP 服务上——前端在两种模式下都只用 `fetch('/api/...')`，没有 Wails 绑定。
 - `frontend/src/`：`api.ts`（类型 + `usePoll`）、`rates.tsx`（每秒采样算速率，全局 context）、`pages/*`（七个页面）。
