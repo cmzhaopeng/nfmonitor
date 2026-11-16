@@ -2,6 +2,7 @@ import {useState} from 'react'
 import {Meta, usePoll} from './api'
 import {RatesProvider} from './rates'
 import Overview from './pages/Overview'
+import Apps from './pages/Apps'
 import Interfaces from './pages/Interfaces'
 import RoutingPage from './pages/Routing'
 import ProxyPage from './pages/Proxy'
@@ -10,6 +11,7 @@ import Connections from './pages/Connections'
 
 const PAGES = [
   {id: 'overview', label: '总览', ico: '◎'},
+  {id: 'apps', label: '应用', ico: '▤'},
   {id: 'links', label: '网卡', ico: '⇅'},
   {id: 'routing', label: '路由', ico: '⤳'},
   {id: 'proxy', label: '代理 / TUN', ico: '⇌'},
@@ -43,6 +45,7 @@ export default function App() {
         </aside>
         <main className="main">
           {page === 'overview' && <Overview go={setPage}/>}
+          {page === 'apps' && <Apps/>}
           {page === 'links' && <Interfaces/>}
           {page === 'routing' && <RoutingPage/>}
           {page === 'proxy' && <ProxyPage/>}

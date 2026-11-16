@@ -3,7 +3,7 @@ import {Socket, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtRate} from '../format'
 
-type Tab = 'proc' | 'conn' | 'listen'
+type Tab = 'conn' | 'listen'
 const keyOf = (s: Socket) => `${s.proto}|${s.local}:${s.localPort}|${s.peer}:${s.peerPort}`
 const isListen = (s: Socket) => s.state === 'LISTEN' || (s.proto === 'udp' && s.state === 'UNCONN')
 
@@ -15,7 +15,7 @@ function scope(addr: string): string {
 
 export default function Connections() {
   const {data, error} = usePoll<Socket[]>('/api/sockets', 2000)
-  const [tab, setTab] = useState<Tab>('proc')
+  const [tab, setTab] = useState<Tab>('conn')
   const [q, setQ] = useState('')
   const prev = useRef<{t: number; m: Map<string, Socket>}>({t: 0, m: new Map()})
   const [speed, setSpeed] = useState<Map<string, {up: number; down: number}>>(new Map())
@@ -35,63 +35,38 @@ export default function Connections() {
     setSpeed(sp)
   }, [data])
 
-  const match = (s: Socket) => !q || `${s.process} ${s.pid} ${s.local}:${s.localPort} ${s.peer}:${s.peerPort} ${s.proto} ${s.iface}`.toLowerCase().includes(q.toLowerCase())
+  const match = (s: Socket) => !q || `${s.app} ${s.dev} ${s.process} ${s.pid} ${s.local}:${s.localPort} ${s.peer}:${s.peerPort} ${s.proto} ${s.iface}`.toLowerCase().includes(q.toLowerCase())
   const all = data || []
   const listens = useMemo(() => all.filter(isListen).filter(match).sort((a, b) => Number(a.localPort) - Number(b.localPort)), [all, q])
   const conns = useMemo(() => all.filter(s => !isListen(s)).filter(match)
     .sort((a, b) => (b.bytesSent + b.bytesRecv) - (a.bytesSent + a.bytesRecv)), [all, q])
-  const procs = useMemo(() => {
-    const m = new Map<string, {name: string; pid: number; conns: number; listens: number; up: number; down: number; sent: number; recv: number}>()
-    for (const s of all.filter(match)) {
-      const k = s.pid ? `${s.process}|${s.pid}` : ''
-      let p = m.get(k)
-      if (!p) m.set(k, p = {name: s.process, pid: s.pid, conns: 0, listens: 0, up: 0, down: 0, sent: 0, recv: 0})
-      if (isListen(s)) p.listens++; else p.conns++
-      const sp = speed.get(keyOf(s))
-      if (sp) { p.up += sp.up; p.down += sp.down }
-      p.sent += s.bytesSent; p.recv += s.bytesRecv
-    }
-    return [...m.values()].sort((a, b) => (b.up + b.down) - (a.up + a.down) || (b.sent + b.recv) - (a.sent + a.recv))
-  }, [all, q, speed])
   const unknown = all.some(s => !s.pid)
 
   return (
     <div className="page">
       <div className="page-head">
-        <div><h1>连接</h1><p>谁在监听、谁在通信。速率与流量来自 TCP 套接字计数，UDP 不计入</p></div>
+        <div><h1>连接</h1><p>逐条连接与监听端口。按应用汇总的流量见「应用」页</p></div>
         <span className="sp"/>
         <input type="search" placeholder="按进程 / 地址 / 端口过滤" value={q} onChange={e => setQ(e.target.value)} style={{width: 230}}/>
       </div>
       <ErrorBanner error={error}/>
       {unknown && <div className="banner warn">部分套接字属于其他用户（如 root）的进程，普通权限下看不到归属。在「防火墙」页授权后这里会补全。</div>}
       <div className="tabs">
-        <button className={tab === 'proc' ? 'on' : ''} onClick={() => setTab('proc')}>按进程（{procs.length}）</button>
         <button className={tab === 'conn' ? 'on' : ''} onClick={() => setTab('conn')}>活动连接（{conns.length}）</button>
         <button className={tab === 'listen' ? 'on' : ''} onClick={() => setTab('listen')}>监听端口（{listens.length}）</button>
       </div>
       <div className="card tbl-wrap">
-        {tab === 'proc' && <table>
-          <thead><tr><th>进程</th><th className="right">PID</th><th className="right">连接</th><th className="right">监听</th>
-            <th className="right">下行</th><th className="right">上行</th><th className="right">现存连接累计收</th><th className="right">现存连接累计发</th></tr></thead>
-          <tbody>{procs.map(p => (
-            <tr key={p.name + p.pid}>
-              <td>{p.pid ? <b>{p.name}</b> : <span className="muted">未知进程（其他用户）</span>}</td>
-              <td className="right num">{p.pid || ''}</td>
-              <td className="right num">{p.conns}</td><td className="right num">{p.listens}</td>
-              <td className="right num nowrap">{fmtRate(p.down)}</td><td className="right num nowrap">{fmtRate(p.up)}</td>
-              <td className="right num nowrap">{fmtBytes(p.recv)}</td><td className="right num nowrap">{fmtBytes(p.sent)}</td>
-            </tr>))}</tbody>
-        </table>}
         {tab === 'conn' && <table>
-          <thead><tr><th>协议</th><th>进程</th><th>本地</th><th>远端</th><th>状态</th>
+          <thead><tr><th>协议</th><th>应用</th><th>网卡</th><th>本地</th><th>远端</th><th>状态</th>
             <th className="right">下行</th><th className="right">上行</th><th className="right">累计收</th><th className="right">累计发</th></tr></thead>
           <tbody>{conns.slice(0, 500).map(s => {
             const sp = speed.get(keyOf(s))
             return (
               <tr key={keyOf(s)}>
                 <td>{s.proto.toUpperCase()}</td>
-                <td>{s.process ? <>{s.process} <span className="muted">{s.pid}</span></> : <span className="muted">未知</span>}</td>
-                <td><code>{s.local}:{s.localPort}</code>{s.iface && <> <span className="tag">{s.iface}</span></>}</td>
+                <td>{s.pid ? <>{s.app || s.process} <span className="muted">{s.pid}</span></> : <span className="muted">未知</span>}</td>
+                <td>{s.dev ? <span className="tag">{s.dev}</span> : <span className="muted">—</span>}</td>
+                <td><code>{s.local}:{s.localPort}</code></td>
                 <td><code>{s.peer}:{s.peerPort}</code></td>
                 <td className="muted">{s.state}</td>
                 <td className="right num nowrap">{sp ? fmtRate(sp.down) : ''}</td><td className="right num nowrap">{sp ? fmtRate(sp.up) : ''}</td>

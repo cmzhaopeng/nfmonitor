@@ -19,10 +19,13 @@ type Server struct {
 	Version string
 	// CheckHost 为真时只接受 Host 为本机回环的请求（防 DNS rebinding），用于 serve 模式。
 	CheckHost bool
+
+	apps *netinfo.AppTracker
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.apps = &netinfo.AppTracker{Sample: s.sockets}
 	get := func(path string, fn func(r *http.Request) (any, error)) {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) { reply(w, fn, r) })
 	}
@@ -35,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	get("/api/routing", func(*http.Request) (any, error) { return netinfo.RoutingInfo() })
 	get("/api/routeget", func(r *http.Request) (any, error) { return netinfo.RouteGet(r.URL.Query().Get("dst")) })
 	get("/api/sockets", func(*http.Request) (any, error) { return s.sockets() })
+	get("/api/apps", func(*http.Request) (any, error) { return s.apps.Snapshot() })
 	get("/api/firewall", func(*http.Request) (any, error) { return netinfo.CollectFirewall(s.Priv.Run), nil })
 	get("/api/proxy", func(*http.Request) (any, error) {
 		links, err := netinfo.Links()
@@ -82,12 +86,20 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) sockets() ([]netinfo.Socket, error) {
+	var socks []netinfo.Socket
 	if s.Priv.Status() != "none" {
 		if out, err := s.Priv.Run("ss"); err == nil {
-			return netinfo.ParseSs(out), nil
+			socks = netinfo.ParseSs(out)
 		}
 	}
-	return netinfo.Sockets()
+	if socks == nil {
+		var err error
+		if socks, err = netinfo.Sockets(); err != nil {
+			return nil, err
+		}
+	}
+	netinfo.EnrichSockets(socks)
+	return socks, nil
 }
 
 func reply(w http.ResponseWriter, fn func(r *http.Request) (any, error), r *http.Request) {
