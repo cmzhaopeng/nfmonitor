@@ -14,7 +14,9 @@ type Socket struct {
 	Peer      string `json:"peer"`
 	PeerPort  string `json:"peerPort"`
 	Iface     string `json:"iface"` // 绑定的设备（addr%dev）
+	Dev       string `json:"dev"`   // 本地地址所在的网卡（EnrichSockets 填）
 	Process   string `json:"process"`
+	App       string `json:"app"` // 可执行文件名（EnrichSockets 填）
 	PID       int    `json:"pid"`
 	BytesSent uint64 `json:"bytesSent"` // 仅 TCP
 	BytesRecv uint64 `json:"bytesRecv"`
@@ -72,6 +74,7 @@ func splitHostPort(s string) (host, port, iface string) {
 	}
 	host, port = s[:i], s[i+1:]
 	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	host = strings.TrimPrefix(host, "::ffff:") // 双栈套接字上的 IPv4 连接，按 IPv4 显示
 	if j := strings.Index(host, "%"); j >= 0 {
 		host, iface = host[:j], host[j+1:]
 	}

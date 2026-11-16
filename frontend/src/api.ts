@@ -21,8 +21,15 @@ export interface Routing { rules: Rule[]; tables: Table[] }
 export interface RouteGet { dst: string; gateway: string; dev: string; prefsrc: string; table: string; type: string; raw: string }
 export interface Socket {
   proto: string; state: string; local: string; localPort: string; peer: string; peerPort: string
-  iface: string; process: string; pid: number; bytesSent: number; bytesRecv: number
+  iface: string; dev: string; process: string; app: string; pid: number; bytesSent: number; bytesRecv: number
 }
+export interface AppIface { dev: string; via: string; conns: number; rxRate: number; txRate: number; rxTotal: number; txTotal: number }
+export interface AppProc { pid: number; user: string; cmdline: string; conns: number }
+export interface App {
+  name: string; procs: AppProc[]; conns: number; listens: number; udp: number
+  rxRate: number; txRate: number; rxTotal: number; txTotal: number; ifaces: AppIface[]
+}
+export interface AppsSnapshot { since: number; time: number; apps: App[] }
 export interface ProxySetting {
   source: string; key: string; value: string; host: string; port: string; process: string; pid: number; listen: boolean
 }

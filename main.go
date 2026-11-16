@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"time"
 
 	"nfmonitor/internal/api"
 	"nfmonitor/internal/priv"
@@ -19,7 +20,7 @@ import (
 var assets embed.FS
 
 // version 可在构建时用 -ldflags "-X main.version=1.2.3" 覆盖。
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -41,7 +42,12 @@ func main() {
 			pc := priv.NewClient()
 			srv := &api.Server{Priv: pc, Version: version}
 			rec := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", os.Args[2], nil))
+			h := srv.Handler()
+			if os.Args[2] == "/api/apps" { // 速率要两次采样才有，先垫一次
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", os.Args[2], nil))
+				time.Sleep(4500 * time.Millisecond)
+			}
+			h.ServeHTTP(rec, httptest.NewRequest("GET", os.Args[2], nil))
 			os.Stdout.Write(rec.Body.Bytes())
 			return
 		case "version", "--version", "-v":

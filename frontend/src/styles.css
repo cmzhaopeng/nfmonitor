@@ -230,3 +230,13 @@ pre.raw {
   .hook::after { display: none; }
   .fw-cols { grid-template-columns: 1fr; }
 }
+
+/* 应用页：展开行 */
+tr.detail > td { background: var(--surface-2); padding: 12px 14px; }
+tbody tr.detail:hover > td { background: var(--surface-2); }
+.app-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.app-detail h3 { margin-bottom: 4px; }
+.app-detail > div { min-width: 0; overflow-x: auto; }
+.app-detail th { background: var(--surface-2); position: static; }
+.app-detail tbody tr:hover td { background: none; }
+@media (max-width: 1100px) { .app-detail { grid-template-columns: 1fr; } }
