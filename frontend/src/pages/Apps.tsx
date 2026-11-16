@@ -1,5 +1,5 @@
 import {Fragment, useEffect, useMemo, useRef, useState} from 'react'
-import {App, AppIface, AppsSnapshot, Socket, usePoll} from '../api'
+import {App, AppIface, AppsSnapshot, elevate, Socket, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtRate} from '../format'
 import {Spark} from '../RateChart'
@@ -15,7 +15,7 @@ export function IfaceTag({i}: {i: {dev: string; via: string}}) {
   return <span className="tag" title={i.via ? `回环连接，对端是本机的 ${i.via}` : undefined}>{i.dev || '未知网卡'}{i.via && <> → {i.via}</>}</span>
 }
 
-function AppDetail({app, socks}: {app: App; socks: Socket[]}) {
+function AppDetail({app, socks, udpOn}: {app: App; socks: Socket[]; udpOn: boolean}) {
   const conns = socks.filter(s => s.app === app.name && s.proto === 'tcp' && s.state !== 'LISTEN')
     .sort((a, b) => (b.bytesSent + b.bytesRecv) - (a.bytesSent + a.bytesRecv))
   const listens = socks.filter(s => s.app === app.name && (s.state === 'LISTEN' || s.proto === 'udp'))
@@ -25,12 +25,14 @@ function AppDetail({app, socks}: {app: App; socks: Socket[]}) {
         <h3>各网卡流量</h3>
         {app.ifaces.length ? <table><thead><tr>
           <th>网卡</th><th className="right">连接</th><th className="right">下行</th><th className="right">上行</th><th className="right">累计收</th><th className="right">累计发</th>
+          {udpOn && <th className="right" title="累计值里 UDP 占的部分（收 / 发）">其中 UDP</th>}
         </tr></thead><tbody>{app.ifaces.map(i => (
-          <tr key={ifKey(i)} className={i.conns ? '' : 'off'}>
+          <tr key={ifKey(i)} className={i.conns || rate(i) > 0 ? '' : 'off'}>
             <td><IfaceTag i={i}/></td><td className="right num">{i.conns}</td>
             <td className="right num nowrap">{fmtRate(i.rxRate)}</td><td className="right num nowrap">{fmtRate(i.txRate)}</td>
             <td className="right num nowrap">{fmtBytes(i.rxTotal)}</td><td className="right num nowrap">{fmtBytes(i.txTotal)}</td>
-          </tr>))}</tbody></table> : <div className="muted">没有 TCP 连接</div>}
+            {udpOn && <td className="right num nowrap dim">{i.udpRx + i.udpTx > 0 ? `${fmtBytes(i.udpRx)} / ${fmtBytes(i.udpTx)}` : '—'}</td>}
+          </tr>))}</tbody></table> : <div className="muted">{udpOn ? '没有流量' : '没有 TCP 连接'}</div>}
         {listens.length > 0 && <>
           <h3 style={{marginTop: 12}}>监听 / UDP</h3>
           <div className="dim">{listens.slice(0, 24).map((s, i) => <code key={i} style={{marginRight: 10, whiteSpace: 'nowrap'}}>{s.proto} {s.local}:{s.localPort}</code>)}
@@ -46,7 +48,7 @@ function AppDetail({app, socks}: {app: App; socks: Socket[]}) {
         </>}
       </div>
       <div>
-        <h3>当前连接（{conns.length}）</h3>
+        <h3>当前 TCP 连接（{conns.length}）</h3>
         {conns.length ? <table><thead><tr><th>网卡</th><th>本地</th><th>远端</th><th className="right">已收</th><th className="right">已发</th></tr></thead>
           <tbody>{conns.slice(0, 15).map((s, i) => (
             <tr key={i}>
@@ -60,8 +62,16 @@ function AppDetail({app, socks}: {app: App; socks: Socket[]}) {
   )
 }
 
-export default function Apps() {
-  const {data, error} = usePoll<AppsSnapshot>('/api/apps', 2000)
+export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
+  const {data, error, reload} = usePoll<AppsSnapshot>('/api/apps', 2000)
+  const [busy, setBusy] = useState(false)
+  const [authErr, setAuthErr] = useState('')
+  const auth = async () => {
+    setBusy(true); setAuthErr('')
+    try { await elevate(); onPrivChange(); reload() } catch (e: any) { setAuthErr(String(e.message || e)) }
+    setBusy(false)
+  }
+  const udpOn = data?.udpMode === 'on'
   const [view, setView] = useState<View>('app')
   const [q, setQ] = useState('')
   const [onlyActive, setOnlyActive] = useState(false)
@@ -101,7 +111,7 @@ export default function Apps() {
   return (
     <div className="page">
       <div className="page-head">
-        <div><h1>应用</h1><p>每个应用走哪块网卡、有多少流量。统计的是 TCP（UDP / QUIC 没有逐连接计数），累计值从 {data ? new Date(data.since).toLocaleTimeString() : '…'} 开始监测起算</p></div>
+        <div><h1>应用</h1><p>每个应用走哪块网卡、有多少流量。{udpOn ? '统计 TCP 和 UDP（含 QUIC）的载荷字节' : '目前只统计了 TCP'}，累计值从 {data ? new Date(data.since).toLocaleTimeString() : '…'} 开始监测起算</p></div>
         <span className="sp"/>
         <label className="dim"><input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)}/> 只看有流量的</label>
         <input type="search" placeholder="按应用 / 网卡 / PID 过滤" value={q} onChange={e => setQ(e.target.value)} style={{width: 200}}/>
@@ -111,6 +121,18 @@ export default function Apps() {
         </div>
       </div>
       <ErrorBanner error={error}/>
+      {data?.udpMode === 'need-priv' && (
+        <div className="banner warn">
+          <div>
+            <b>UDP / QUIC 流量还没有计入</b>
+            <div className="dim">内核不提供逐套接字的 UDP 字节数，需要以 root 运行 bpftrace 探针（只读观测 UDP 收发，不改任何网络配置）。授权后开始计入，离开本页约半分钟探针自动卸载。</div>
+            {authErr && <div style={{color: 'var(--crit)', marginTop: 4}}>{authErr}</div>}
+          </div>
+          <span className="sp"/>
+          <button className="btn primary" disabled={busy} onClick={auth}>{busy ? '等待系统授权…' : '授权统计 UDP'}</button>
+        </div>
+      )}
+      {data?.udpMode === 'error' && <div className="banner warn"><div><b>UDP 流量未计入</b><div className="dim" style={{overflowWrap: 'anywhere'}}>{data.udpError}</div></div></div>}
       {unknown && <div className="banner warn">部分连接属于其他用户（如 root）的进程，普通权限下看不到归属，归在「未知」里。在「防火墙」页授权后会补全。</div>}
 
       {view === 'app' && <div className="card tbl-wrap">
@@ -119,7 +141,7 @@ export default function Apps() {
             <th className="right">下行</th><th className="right">上行</th><th>趋势</th><th className="right">累计收</th><th className="right">累计发</th></tr></thead>
           <tbody>{apps.map(a => (
             <Fragment key={a.name}>
-              <tr className={'clickable' + (open === a.name ? ' sel' : '') + (a.conns ? '' : ' off')} onClick={() => setOpen(open === a.name ? null : a.name)}>
+              <tr className={'clickable' + (open === a.name ? ' sel' : '') + (a.conns || rate(a) > 0 ? '' : ' off')} onClick={() => setOpen(open === a.name ? null : a.name)}>
                 <td>{a.name ? <b>{a.name}</b> : <span className="muted">{appLabel('')}</span>}
                   {a.procs.length > 1 && <span className="muted"> ×{a.procs.length}</span>}</td>
                 <td>{a.ifaces.filter(i => i.conns > 0 || total(i) > 0).map(i => <span key={ifKey(i)} style={{marginRight: 4}}><IfaceTag i={i}/></span>)}
@@ -131,7 +153,7 @@ export default function Apps() {
                 <td className="right num nowrap">{fmtBytes(a.rxTotal)}</td>
                 <td className="right num nowrap">{fmtBytes(a.txTotal)}</td>
               </tr>
-              {open === a.name && <tr className="detail"><td colSpan={8}><AppDetail app={a} socks={Array.isArray(socks.data) ? socks.data : []}/></td></tr>}
+              {open === a.name && <tr className="detail"><td colSpan={8}><AppDetail app={a} socks={Array.isArray(socks.data) ? socks.data : []} udpOn={udpOn}/></td></tr>}
             </Fragment>
           ))}</tbody>
         </table>
@@ -151,7 +173,7 @@ export default function Apps() {
             <div className="tbl-wrap"><table>
               <thead><tr><th>应用</th><th>对端</th><th className="right">连接</th><th className="right">下行</th><th className="right">上行</th><th className="right">累计收</th><th className="right">累计发</th></tr></thead>
               <tbody>{d.apps.map(({app, i}) => (
-                <tr key={app.name + ifKey(i)} className={i.conns ? '' : 'off'}>
+                <tr key={app.name + ifKey(i)} className={i.conns || rate(i) > 0 ? '' : 'off'}>
                   <td>{app.name ? <b>{app.name}</b> : <span className="muted">{appLabel('')}</span>}</td>
                   <td>{i.via ? <span className="tag">本机 {i.via}</span> : <span className="muted">{d.dev === 'lo' ? '本机' : '外部'}</span>}</td>
                   <td className="right num">{i.conns}</td>
@@ -161,7 +183,7 @@ export default function Apps() {
             </table></div>
           </div>
         ))}
-        {data && !devs.length && <div className="card empty">没有 TCP 连接</div>}
+        {data && !devs.length && <div className="card empty">没有流量</div>}
       </div>}
     </div>
   )

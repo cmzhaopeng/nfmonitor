@@ -18,6 +18,8 @@ var PrivCommands = map[string][]string{
 	"ip6tables-legacy-save": {"ip6tables-legacy-save", "-c"},
 	"ufw":                   {"ufw", "status", "verbose"},
 	"ss":                    append([]string{"ss"}, SsArgs...),
+	// 常驻的 bpftrace 探针（脚本固定，见 udp.go）；每次调用取走上次以来的 UDP 流量增量。
+	"udpstat": {"bpftrace", "-q", "-e", udpScript},
 }
 
 // RunPrivCommand 直接执行白名单命令（调用方自己保证已有权限）。
@@ -25,6 +27,9 @@ func RunPrivCommand(name string) (string, error) {
 	argv, ok := PrivCommands[name]
 	if !ok {
 		return "", fmt.Errorf("不允许的命令: %s", name)
+	}
+	if name == "udpstat" {
+		return udpMon.drain()
 	}
 	return Run(15*time.Second, argv[0], argv[1:]...)
 }

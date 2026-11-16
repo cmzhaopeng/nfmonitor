@@ -23,13 +23,16 @@ export interface Socket {
   proto: string; state: string; local: string; localPort: string; peer: string; peerPort: string
   iface: string; dev: string; process: string; app: string; pid: number; bytesSent: number; bytesRecv: number
 }
-export interface AppIface { dev: string; via: string; conns: number; rxRate: number; txRate: number; rxTotal: number; txTotal: number }
+export interface AppIface { dev: string; via: string; conns: number; rxRate: number; txRate: number; rxTotal: number; txTotal: number; udpRx: number; udpTx: number }
 export interface AppProc { pid: number; user: string; cmdline: string; conns: number }
 export interface App {
   name: string; procs: AppProc[]; conns: number; listens: number; udp: number
-  rxRate: number; txRate: number; rxTotal: number; txTotal: number; ifaces: AppIface[]
+  rxRate: number; txRate: number; rxTotal: number; txTotal: number; udpRx: number; udpTx: number; ifaces: AppIface[]
 }
-export interface AppsSnapshot { since: number; time: number; apps: App[] }
+export interface AppsSnapshot {
+  since: number; time: number; apps: App[]
+  udpMode: 'on' | 'need-priv' | 'error' | 'off'; udpError: string
+}
 export interface ProxySetting {
   source: string; key: string; value: string; host: string; port: string; process: string; pid: number; listen: boolean
 }

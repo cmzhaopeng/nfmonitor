@@ -41,6 +41,7 @@ overrides:
       - nftables
       - iptables
       - pkexec | policykit-1
+      - bpftrace
   rpm:
     depends:
       - libgtk-3.so.0()(64bit)
@@ -50,6 +51,7 @@ overrides:
       - nftables
       - iptables
       - polkit
+      - bpftrace
 rpm:
   group: Applications/System
   compression: xz

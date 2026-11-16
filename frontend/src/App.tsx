@@ -45,7 +45,7 @@ export default function App() {
         </aside>
         <main className="main">
           {page === 'overview' && <Overview go={setPage}/>}
-          {page === 'apps' && <Apps/>}
+          {page === 'apps' && <Apps onPrivChange={meta.reload}/>}
           {page === 'links' && <Interfaces/>}
           {page === 'routing' && <RoutingPage/>}
           {page === 'proxy' && <ProxyPage/>}

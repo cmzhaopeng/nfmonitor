@@ -21,8 +21,10 @@ type AppIface struct {
 	Conns   int     `json:"conns"`
 	RxRate  float64 `json:"rxRate"` // 字节/秒
 	TxRate  float64 `json:"txRate"`
-	RxTotal uint64  `json:"rxTotal"` // 自开始监测以来
+	RxTotal uint64  `json:"rxTotal"` // 自开始监测以来，TCP + UDP
 	TxTotal uint64  `json:"txTotal"`
+	UDPRx   uint64  `json:"udpRx"` // 其中 UDP 的部分
+	UDPTx   uint64  `json:"udpTx"`
 }
 
 type AppProc struct {
@@ -37,11 +39,13 @@ type App struct {
 	Procs   []AppProc  `json:"procs"`
 	Conns   int        `json:"conns"`   // 已建立的 TCP 连接
 	Listens int        `json:"listens"` // 监听端口数
-	UDP     int        `json:"udp"`     // UDP 套接字数（无流量计数）
+	UDP     int        `json:"udp"`     // UDP 套接字数
 	RxRate  float64    `json:"rxRate"`
 	TxRate  float64    `json:"txRate"`
 	RxTotal uint64     `json:"rxTotal"`
 	TxTotal uint64     `json:"txTotal"`
+	UDPRx   uint64     `json:"udpRx"`
+	UDPTx   uint64     `json:"udpTx"`
 	Ifaces  []AppIface `json:"ifaces"`
 }
 
@@ -49,6 +53,9 @@ type AppsSnapshot struct {
 	Since int64 `json:"since"` // 开始监测的时间（unix 毫秒）
 	Time  int64 `json:"time"`
 	Apps  []App `json:"apps"`
+	// UDP 流量统计的状态：on | need-priv（要先授权）| error（见 UDPError）| off
+	UDPMode  string `json:"udpMode"`
+	UDPError string `json:"udpError"`
 }
 
 // EnrichSockets 给每个套接字补上所属应用名和所在网卡。
@@ -105,15 +112,23 @@ func appName(pid int, comm string) string {
 type flowKey struct{ app, dev, via string }
 
 type flowAcc struct {
-	rx, tx         uint64
+	rx, tx         uint64 // TCP + UDP
+	udpRx, udpTx   uint64
 	rxRate, txRate float64
 	conns          int
 }
 
-// AppTracker 周期性采样套接字，把 TCP 字节计数的增量按「应用 × 网卡」累加。
+// AppTracker 周期性采样套接字，把 TCP 字节计数的增量按「应用 × 网卡」累加；
+// UDP 没有逐套接字计数，增量由 UDP 回调（bpftrace 探针，需 root）提供。
 // 只在有人查询时采样：超过 idleAfter 没有请求就停，下次请求再继续。
 type AppTracker struct {
 	Sample func() ([]Socket, error) // 返回已 Enrich 的套接字
+	UDP    func() (UDPStat, error)  // 可为 nil；返回上次调用以来的 UDP 增量
+
+	udpT     uint64            // 上一批 UDP 数据的截止时刻
+	udpSeen  map[[2]int]string // {pid, 端口} → 最近收到包的网卡，给发送方向定网卡用
+	defDev   string            // 默认路由的出口网卡（兜底）
+	defDevAt time.Time
 
 	mu      sync.Mutex
 	started bool
@@ -163,6 +178,11 @@ func sockKey(s Socket) string {
 
 func (t *AppTracker) sample() {
 	socks, err := t.Sample()
+	var udp UDPStat
+	var udpErr error
+	if t.UDP != nil {
+		udp, udpErr = t.UDP()
+	}
 	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -241,6 +261,9 @@ func (t *AppTracker) sample() {
 		}
 	}
 	t.prev, t.prevT = cur, now
+	if t.UDP != nil && udpErr == nil {
+		t.addUDP(udp, socks, dt)
+	}
 
 	byApp := map[string]*App{}
 	get := func(name string) *App {
@@ -265,12 +288,14 @@ func (t *AppTracker) sample() {
 			continue
 		}
 		a := get(k.app)
-		a.Ifaces = append(a.Ifaces, AppIface{Dev: k.dev, Via: k.via, Conns: f.conns, RxRate: f.rxRate, TxRate: f.txRate, RxTotal: f.rx, TxTotal: f.tx})
+		a.Ifaces = append(a.Ifaces, AppIface{Dev: k.dev, Via: k.via, Conns: f.conns, RxRate: f.rxRate, TxRate: f.txRate, RxTotal: f.rx, TxTotal: f.tx, UDPRx: f.udpRx, UDPTx: f.udpTx})
 		a.Conns += f.conns
 		a.RxRate += f.rxRate
 		a.TxRate += f.txRate
 		a.RxTotal += f.rx
 		a.TxTotal += f.tx
+		a.UDPRx += f.udpRx
+		a.UDPTx += f.udpTx
 	}
 	out := make([]App, 0, len(byApp))
 	for _, a := range byApp {
@@ -284,7 +309,99 @@ func (t *AppTracker) sample() {
 		out = append(out, *a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	t.snap = AppsSnapshot{Since: t.since.UnixMilli(), Time: now.UnixMilli(), Apps: out}
+	t.snap = AppsSnapshot{Since: t.since.UnixMilli(), Time: now.UnixMilli(), Apps: out, UDPMode: "on"}
+	switch {
+	case t.UDP == nil:
+		t.snap.UDPMode = "off"
+	case udpErr != nil && strings.Contains(udpErr.Error(), "尚未授权"):
+		t.snap.UDPMode = "need-priv"
+	case udpErr != nil:
+		t.snap.UDPMode, t.snap.UDPError = "error", strings.TrimSpace(udpErr.Error())
+	}
+}
+
+// addUDP 把一批 UDP 增量记到「应用 × 网卡」上。调用方持有 t.mu。
+func (t *AppTracker) addUDP(udp UDPStat, socks []Socket, dt float64) {
+	// 这批数据对应的时长以探针自己的时钟为准，避免两边采样节拍不齐造成速率抖动。
+	if udp.T > t.udpT && t.udpT != 0 {
+		dt = float64(udp.T-t.udpT) / 1e9
+	}
+	if udp.T != 0 {
+		t.udpT = udp.T
+	}
+	if len(udp.Flows) == 0 {
+		return
+	}
+	ifName := map[int]string{}
+	if ifs, err := net.Interfaces(); err == nil {
+		for _, ifc := range ifs {
+			ifName[ifc.Index] = ifc.Name
+		}
+	}
+	pidApp := map[int]string{}
+	sockDev := map[[2]int]string{}
+	for _, s := range socks {
+		if s.PID == 0 {
+			continue
+		}
+		pidApp[s.PID] = s.App
+		if s.Proto == "udp" && s.Dev != "" {
+			port, _ := strconv.Atoi(s.LocalPort)
+			sockDev[[2]int{s.PID, port}] = s.Dev
+		}
+	}
+	if t.udpSeen == nil || len(t.udpSeen) > 20000 {
+		t.udpSeen = map[[2]int]string{}
+	}
+	// 先过一遍接收方向：包从哪块网卡进来是确定的。
+	for _, f := range udp.Flows {
+		if f.Rx > 0 && ifName[f.Ifindex] != "" {
+			t.udpSeen[[2]int{f.PID, f.Port}] = ifName[f.Ifindex]
+		}
+	}
+	for _, f := range udp.Flows {
+		app, ok := pidApp[f.PID]
+		if !ok {
+			app = appName(f.PID, f.Comm)
+			pidApp[f.PID] = app
+		}
+		k := [2]int{f.PID, f.Port}
+		dev := ifName[f.Ifindex]
+		if dev == "" {
+			dev = sockDev[k] // 已连接 / 绑定了地址的套接字
+		}
+		if dev == "" {
+			dev = t.udpSeen[k] // 没绑地址：用它收包的网卡
+		}
+		if dev == "" {
+			dev = t.defaultDev() // 只发不收又没绑地址：按默认路由算
+		}
+		fk := flowKey{app: app, dev: dev}
+		a := t.acc[fk]
+		if a == nil {
+			a = &flowAcc{}
+			t.acc[fk] = a
+		}
+		a.rx += f.Rx
+		a.tx += f.Tx
+		a.udpRx += f.Rx
+		a.udpTx += f.Tx
+		if dt > 0 {
+			a.rxRate += float64(f.Rx) / dt
+			a.txRate += float64(f.Tx) / dt
+		}
+	}
+}
+
+func (t *AppTracker) defaultDev() string {
+	if time.Since(t.defDevAt) > 30*time.Second {
+		t.defDevAt = time.Now()
+		t.defDev = ""
+		if r, err := RouteGet("1.1.1.1"); err == nil {
+			t.defDev = r.Dev
+		}
+	}
+	return t.defDev
 }
 
 func procUserCmd(pid int) (usr, cmd string) {
