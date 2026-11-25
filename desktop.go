@@ -16,6 +16,7 @@ import (
 func runDesktop() {
 	pc := priv.NewClient()
 	srv := &api.Server{Priv: pc, Version: version}
+	srv.Hosts, srv.HostsErr = openHosts()
 	err := wails.Run(&options.App{
 		Title:     "nfmonitor",
 		Width:     1360,
@@ -27,7 +28,12 @@ func runDesktop() {
 			Handler: srv.Handler(), // 静态资源没命中的请求（/api/*）落到这里
 		},
 		BackgroundColour: &options.RGBA{R: 13, G: 13, B: 13, A: 1},
-		OnShutdown:       func(context.Context) { pc.Close() },
+		OnShutdown: func(context.Context) {
+			pc.Close()
+			if srv.Hosts != nil {
+				srv.Hosts.Close()
+			}
+		},
 		Linux: &linux.Options{
 			WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand,
 			ProgramName:      "nfmonitor",

@@ -1,10 +1,7 @@
 package netinfo
 
 import (
-	"bufio"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -79,9 +76,13 @@ type ipStats struct {
 	Dropped uint64 `json:"dropped"`
 }
 
-// Links 返回全部网络接口。
-func Links() ([]Link, error) {
-	out, err := run("ip", "-j", "-s", "-d", "addr", "show")
+// Links 返回本机全部网络接口。
+func Links() ([]Link, error) { return LinksOn(Local) }
+
+// LinksOn 返回 sys 上的全部网络接口。
+func LinksOn(sys Sys) ([]Link, error) {
+	sys = orLocal(sys)
+	out, err := sys.Run(8*time.Second, "ip", "-j", "-s", "-d", "addr", "show")
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +91,7 @@ func Links() ([]Link, error) {
 		return nil, err
 	}
 	links := make([]Link, 0, len(raw))
+	sysInfo := readIfaceSys(sys)
 	for _, r := range raw {
 		l := Link{
 			Index: r.Ifindex, Name: r.Ifname, Flags: r.Flags, State: r.Operstate,
@@ -104,17 +106,13 @@ func Links() ([]Link, error) {
 		for _, a := range r.AddrInfo {
 			l.Addrs = append(l.Addrs, Addr{Family: a.Family, Local: a.Local, Prefix: a.Prefixlen, Scope: a.Scope})
 		}
-		sys := filepath.Join("/sys/class/net", r.Ifname)
-		l.Kind, l.Class = classify(r, sys)
+		si := sysInfo[r.Ifname]
+		l.Kind, l.Class = classify(r, si)
 		l.Up = hasFlag(r.Flags, "UP") && hasFlag(r.Flags, "LOWER_UP")
-		if b, err := os.ReadFile(filepath.Join(sys, "speed")); err == nil && l.Class == "physical" {
-			if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 {
-				l.Speed = n
-			}
+		if l.Class == "physical" && si.speed > 0 {
+			l.Speed = si.speed
 		}
-		if t, err := os.Readlink(filepath.Join(sys, "device/driver")); err == nil {
-			l.Driver = filepath.Base(t)
-		}
+		l.Driver = si.driver
 		links = append(links, l)
 	}
 	return links, nil
@@ -129,7 +127,7 @@ func hasFlag(flags []string, f string) bool {
 	return false
 }
 
-func classify(r ipAddrJSON, sys string) (kind, class string) {
+func classify(r ipAddrJSON, si ifaceSys) (kind, class string) {
 	if r.LinkType == "loopback" {
 		return "loopback", "loopback"
 	}
@@ -143,10 +141,10 @@ func classify(r ipAddrJSON, sys string) (kind, class string) {
 		}
 		return k, "virtual"
 	}
-	if _, err := os.Stat(filepath.Join(sys, "wireless")); err == nil {
+	if si.wireless {
 		return "wifi", "physical"
 	}
-	if _, err := os.Stat(filepath.Join(sys, "device")); err == nil {
+	if si.device {
 		return "ethernet", "physical"
 	}
 	if r.LinkType == "none" || r.LinkType == "ppp" {
@@ -161,17 +159,24 @@ type StatSample struct {
 	Stats map[string]Counters `json:"stats"`
 }
 
-// Stats 读取 /proc/net/dev，开销很小，适合每秒轮询。
-func Stats() (StatSample, error) {
+// Stats 读取本机 /proc/net/dev，开销很小，适合每秒轮询。
+func Stats() (StatSample, error) { return StatsOn(Local) }
+
+// StatsOn 读取 sys 上的 /proc/net/dev。
+func StatsOn(sys Sys) (StatSample, error) {
 	s := StatSample{Time: time.Now().UnixMilli(), Stats: map[string]Counters{}}
-	f, err := os.Open("/proc/net/dev")
+	b, err := orLocal(sys).ReadFile("/proc/net/dev")
 	if err != nil {
 		return s, err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		name, rest, ok := strings.Cut(sc.Text(), ":")
+	s.Time = time.Now().UnixMilli() // 远程读取有往返延迟，以拿到数据的时刻为准
+	parseNetDev(string(b), s.Stats)
+	return s, nil
+}
+
+func parseNetDev(text string, stats map[string]Counters) {
+	for _, line := range strings.Split(text, "\n") {
+		name, rest, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
@@ -180,10 +185,9 @@ func Stats() (StatSample, error) {
 			continue
 		}
 		u := func(i int) uint64 { n, _ := strconv.ParseUint(fs[i], 10, 64); return n }
-		s.Stats[strings.TrimSpace(name)] = Counters{
+		stats[strings.TrimSpace(name)] = Counters{
 			RxBytes: u(0), RxPackets: u(1), RxErrors: u(2), RxDropped: u(3),
 			TxBytes: u(8), TxPackets: u(9), TxErrors: u(10), TxDropped: u(11),
 		}
 	}
-	return s, sc.Err()
 }

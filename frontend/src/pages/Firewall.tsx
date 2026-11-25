@@ -1,10 +1,11 @@
 import {useMemo, useState} from 'react'
-import {elevate, Firewall, FwChain, FwTable, usePoll} from '../api'
+import {elevate, Firewall, FwChain, FwTable, Meta, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtCount} from '../format'
 import UfwPanel from './Ufw'
+import FirewalldPanel from './Firewalld'
 
-type Tab = 'hooks' | 'tables' | 'ufw' | 'raw'
+type Tab = 'hooks' | 'tables' | 'ufw' | 'firewalld' | 'raw'
 interface Ref { table: FwTable; chain: FwChain }
 const refKey = (r: Ref) => `${r.table.family}|${r.table.name}|${r.chain.name}`
 
@@ -17,8 +18,9 @@ const BACKEND_LABEL: Record<string, string> = {nft: 'nftables', 'iptables-nft': 
 const RAW_LABEL: Record<string, string> = {
   nft: 'nft list ruleset', ufw: 'ufw status verbose', 'ufw-numbered': 'ufw status numbered', 'iptables-save': 'iptables-save', 'ip6tables-save': 'ip6tables-save',
   'iptables-legacy-save': 'iptables-legacy-save', 'ip6tables-legacy-save': 'ip6tables-legacy-save',
+  'firewalld-zones': 'firewall-cmd --list-all-zones',
 }
-const RAW_ORDER = ['ufw', 'ufw-numbered', 'nft', 'iptables-save', 'ip6tables-save', 'iptables-legacy-save', 'ip6tables-legacy-save']
+const RAW_ORDER = ['ufw', 'ufw-numbered', 'firewalld-zones', 'nft', 'iptables-save', 'ip6tables-save', 'iptables-legacy-save', 'ip6tables-legacy-save']
 
 function PolicyBadge({c}: {c: FwChain}) {
   if (!c.base) return null
@@ -78,7 +80,8 @@ function ChainDetail({r, all, onJump}: {r: Ref; all: Ref[]; onJump: (r: Ref) => 
   )
 }
 
-export default function FirewallPage({onPrivChange}: {onPrivChange: () => void}) {
+export default function FirewallPage({onPrivChange, meta}: {onPrivChange: () => void; meta: Meta | null}) {
+  const remote = !!meta?.remote
   const {data, error, loading, reload} = usePoll<Firewall>('/api/firewall', 10000)
   const [tab, setTab] = useState<Tab>('hooks')
   const [selKey, setSelKey] = useState('')
@@ -134,13 +137,22 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
         <span className="sp"/>
         {data?.privileged && <>
           {data.tools.ufw && <span className={'badge ' + (data.ufwStatus === 'active' ? 'good' : 'warn')}>ufw {data.ufwStatus === 'active' ? '已启用' : data.ufwStatus === 'inactive' ? '未启用' : '状态未知'}</span>}
+          {data.firewalld && <span className={'badge ' + (data.firewalld.state === 'running' ? 'good' : 'warn')}>firewalld {data.firewalld.state === 'running' ? '运行中' : '未运行'}</span>}
           <span className="muted">{data.tables.length} 张表 · {all.length} 条链 · {totalRules} 条规则</span>
           <button className="btn" onClick={reload}>刷新</button>
         </>}
       </div>
       <ErrorBanner error={error}/>
 
-      {data && !data.privileged && (
+      {data && !data.privileged && remote && (
+        <div className="banner warn">
+          <div>
+            <b>读取远程主机的防火墙规则需要 root 权限</b>
+            <div className="dim">{meta?.rootErr || '请用 root 登录，或为登录用户配置 sudo（免密，或在「主机管理」里填写 sudo 口令）。'}</div>
+          </div>
+        </div>
+      )}
+      {data && !data.privileged && !remote && (
         <div className="banner warn">
           <div>
             <b>读取防火墙规则需要 root 权限</b>
@@ -163,6 +175,7 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
           <button className={tab === 'hooks' ? 'on' : ''} onClick={() => setTab('hooks')}>Hook 流程</button>
           <button className={tab === 'tables' ? 'on' : ''} onClick={() => setTab('tables')}>表与链</button>
           {data.ufw && <button className={tab === 'ufw' ? 'on' : ''} onClick={() => setTab('ufw')}>ufw 策略</button>}
+          {data.firewalld && <button className={tab === 'firewalld' ? 'on' : ''} onClick={() => setTab('firewalld')}>firewalld 区域</button>}
           <button className={tab === 'raw' ? 'on' : ''} onClick={() => setTab('raw')}>原始输出</button>
           <span style={{flex: 1}}/>
           {(tab === 'hooks' || tab === 'tables') && <input type="search" placeholder="搜索规则：端口、地址、链名…" value={q} onChange={e => setQ(e.target.value)} style={{width: 240, marginBottom: 6}}/>}
@@ -228,6 +241,7 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
         </div>}
 
         {tab === 'ufw' && data.ufw && <UfwPanel ufw={data.ufw} onChanged={reload}/>}
+        {tab === 'firewalld' && data.firewalld && <FirewalldPanel info={data.firewalld} onChanged={reload}/>}
 
         {tab === 'raw' && <div className="card">
           <div className="card-head">

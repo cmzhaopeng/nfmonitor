@@ -1,5 +1,5 @@
 import {useEffect, useMemo, useRef, useState} from 'react'
-import {Socket, usePoll} from '../api'
+import {isRemote, Socket, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtRate} from '../format'
 
@@ -50,7 +50,7 @@ export default function Connections() {
         <input type="search" placeholder="按进程 / 地址 / 端口过滤" value={q} onChange={e => setQ(e.target.value)} style={{width: 230}}/>
       </div>
       <ErrorBanner error={error}/>
-      {unknown && <div className="banner warn">部分套接字属于其他用户（如 root）的进程，普通权限下看不到归属。在「防火墙」页授权后这里会补全。</div>}
+      {unknown && <div className="banner warn">部分套接字属于其他用户（如 root）的进程，普通权限下看不到归属。{isRemote() ? '远程登录用户能以 root / sudo 执行后这里会补全。' : '在「防火墙」页授权后这里会补全。'}</div>}
       <div className="tabs">
         <button className={tab === 'conn' ? 'on' : ''} onClick={() => setTab('conn')}>活动连接（{conns.length}）</button>
         <button className={tab === 'listen' ? 'on' : ''} onClick={() => setTab('listen')}>监听端口（{listens.length}）</button>
