@@ -30,6 +30,13 @@ type Server struct {
 	Hosts *remote.Manager
 	// HostsErr 是打开主机配置失败的原因（Hosts 为 nil 时给界面看）。
 	HostsErr error
+	// NoLocal 为真时不采集本机：Windows 客户端（采集层只支持 Linux）和服务器版（只看纳管主机）。
+	NoLocal bool
+	// Mode 是运行方式：desktop | serve | server，界面据此调整（由 /api/session 返回）。
+	Mode string
+
+	fleetMu sync.Mutex // 同一时间只有一次总览采集
+	fleetSt fleetState
 
 	apps     *netinfo.AppTracker
 	trackMu  sync.Mutex
@@ -46,6 +53,9 @@ type target struct {
 func (s *Server) target(r *http.Request) (target, error) {
 	id := r.URL.Query().Get("host")
 	if id == "" || id == "local" {
+		if s.NoLocal {
+			return target{}, netinfo.ErrNoLocal
+		}
 		return target{sys: netinfo.Local, runPriv: s.Priv.Run}, nil
 	}
 	if s.Hosts == nil {
@@ -107,6 +117,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			reply(w, func(r *http.Request) (any, error) {
 				t, err := s.target(r)
+				if errors.Is(err, netinfo.ErrNoLocal) && (path == "/api/meta" || path == "/api/fleet") {
+					return fn(r, target{}) // 这两个接口不需要本机
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -114,9 +127,23 @@ func (s *Server) Handler() http.Handler {
 			}, r)
 		})
 	}
+	// 运行方式：界面据此决定有没有「本机」、要不要登录（服务器版由 internal/server 接管这个接口）。
+	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, func(*http.Request) (any, error) {
+			mode := s.Mode
+			if mode == "" {
+				mode = "desktop"
+			}
+			return map[string]any{"mode": mode, "local": !s.NoLocal, "version": s.Version, "canWrite": true}, nil
+		}, r)
+	})
+	get("/api/fleet", func(_ *http.Request, _ target) (any, error) { return s.fleet() })
 	get("/api/meta", func(_ *http.Request, t target) (any, error) {
 		if t.host == nil {
 			host, _ := os.Hostname()
+			if t.sys == nil { // 不采集本机
+				return map[string]any{"version": s.Version, "hostname": host, "priv": "none", "remote": false, "local": false}, nil
+			}
 			return map[string]any{"version": s.Version, "hostname": host, "priv": s.Priv.Status(), "remote": false}, nil
 		}
 		cfg := t.host.Config()
@@ -167,6 +194,9 @@ func (s *Server) Handler() http.Handler {
 			if id := r.URL.Query().Get("host"); id != "" && id != "local" {
 				return nil, errors.New("远程主机的 root 权限取决于登录用户：请用 root 登录，或为该用户配置 sudo")
 			}
+			if s.NoLocal {
+				return nil, netinfo.ErrNoLocal
+			}
 			if err := s.Priv.Elevate(); err != nil {
 				return nil, err
 			}
@@ -199,6 +229,9 @@ func (s *Server) Handler() http.Handler {
 			if t.host != nil {
 				return s.remoteUfw(t.host, op, apply)
 			}
+			if s.NoLocal {
+				return nil, netinfo.ErrNoLocal
+			}
 			if apply {
 				return s.Priv.ApplyUfw(op)
 			}
@@ -229,6 +262,9 @@ func (s *Server) Handler() http.Handler {
 			}
 			if t.host != nil {
 				return s.remoteFirewalld(t.host, op, apply)
+			}
+			if s.NoLocal {
+				return nil, netinfo.ErrNoLocal
 			}
 			if apply {
 				return s.Priv.ApplyFirewalld(op)
@@ -321,6 +357,8 @@ func (s *Server) remoteFirewalld(h *remote.Host, op netinfo.FirewalldOp, apply b
 	}
 	return res, nil
 }
+
+var osHostname = os.Hostname
 
 func (s *Server) sameUser(r *http.Request) bool {
 	uid, err := peerUID(r.RemoteAddr)

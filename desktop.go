@@ -1,3 +1,5 @@
+//go:build desktop
+
 package main
 
 import (
@@ -10,12 +12,14 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"nfmonitor/internal/api"
+	"nfmonitor/internal/netinfo"
 	"nfmonitor/internal/priv"
 )
 
 func runDesktop() {
 	pc := priv.NewClient()
-	srv := &api.Server{Priv: pc, Version: version}
+	// Windows 等非 Linux 平台：只作为管理端监控远程 Linux 主机，不采集本机。
+	srv := &api.Server{Priv: pc, Version: version, Mode: "desktop", NoLocal: !netinfo.LocalSupported}
 	srv.Hosts, srv.HostsErr = openHosts()
 	err := wails.Run(&options.App{
 		Title:     "nfmonitor",

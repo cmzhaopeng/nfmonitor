@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -195,8 +194,8 @@ func (t *procTable) get(pid int) (procEntry, bool) {
 		if exe, err := os.Readlink(filepath.Join(d, "exe")); err == nil {
 			e.exe = filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
 		}
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			e.user = strconv.Itoa(int(sys.Uid))
+		if uid, ok := fileUID(st); ok {
+			e.user = strconv.Itoa(uid)
 			if u, err := user.LookupId(e.user); err == nil {
 				e.user = u.Username
 			}

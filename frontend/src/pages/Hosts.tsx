@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {
-  AuthKind, connectHost, deleteHost, disconnectHost, HostConfig, HostInfo, HostKeyProbe, HostView, probeHost, saveHost, Secrets, testHost, usePoll,
+  AuthKind, canWrite, connectHost, hasLocal, isServer, deleteHost, disconnectHost, HostConfig, HostInfo, HostKeyProbe, HostView, probeHost, saveHost, Secrets, testHost, usePoll,
 } from '../api'
 import {ErrorBanner} from '../App'
 import {Modal} from './Ufw'
@@ -36,7 +36,7 @@ function HostEditor({old, onClose, onSaved}: {old?: HostView; onClose: () => voi
 
   const cfg = (): Partial<HostConfig> => ({
     id: d.id || undefined, name: d.name, addr: d.addr.trim(), port: Number(d.port) || 22, user: d.user.trim(), auth: d.auth,
-    keyPath: d.auth === 'key' ? d.keyPath.trim() : '', hostKey,
+    keyPath: d.auth === 'key' && !isServer() ? d.keyPath.trim() : '', hostKey,
   })
   const secrets = (): Secrets => {
     const s: Secrets = {clear: [...d.clear]}
@@ -85,16 +85,16 @@ function HostEditor({old, onClose, onSaved}: {old?: HostView; onClose: () => voi
 
         <div className="form-sec">认证方式</div>
         <div className="field span2">
-          <div className="seg">{(Object.keys(AUTH_LABEL) as AuthKind[]).map(k =>
+          <div className="seg">{(Object.keys(AUTH_LABEL) as AuthKind[]).filter(k => !isServer() || k !== 'agent').map(k =>
             <button key={k} className={d.auth === k ? 'on' : ''} onClick={() => set('auth', k)}>{AUTH_LABEL[k]}</button>)}</div>
         </div>
         {d.auth === 'password' && <label className="field span2"><span className="field-label">登录口令</span>
           <input type="password" autoComplete="new-password" placeholder={saved(old?.hasPassword, 'password')} value={d.password} onChange={e => set('password', e.target.value)}/></label>}
         {d.auth === 'key' && <>
-          <label className="field span2"><span className="field-label">私钥文件路径（本机）</span>
+          {!isServer() && <label className="field span2"><span className="field-label">私钥文件路径（本机）</span>
             <input type="text" placeholder="~/.ssh/id_ed25519" value={d.keyPath} onChange={e => set('keyPath', e.target.value)}/>
-            <span className="hint">程序每次连接时读取这个文件，配置里只记路径。也可以不填路径，直接在下面粘贴私钥内容。</span></label>
-          <label className="field span2"><span className="field-label">或粘贴私钥内容</span>
+            <span className="hint">程序每次连接时读取这个文件，配置里只记路径。也可以不填路径，直接在下面粘贴私钥内容。</span></label>}
+          <label className="field span2"><span className="field-label">{isServer() ? '私钥内容' : '或粘贴私钥内容'}</span>
             <textarea spellCheck={false} placeholder={saved(old?.hasKeyPem, 'keyPem') || '-----BEGIN OPENSSH PRIVATE KEY-----'} value={d.keyPem} onChange={e => set('keyPem', e.target.value)}/>
             {old?.hasKeyPem && <label className="check"><input type="checkbox" checked={d.clear.includes('keyPem')} onChange={e => toggleClear('keyPem', e.target.checked)}/>删除已保存的私钥内容（改用文件路径）</label>}</label>
           <label className="field span2"><span className="field-label">私钥口令（私钥有口令保护时填写）</span>
@@ -128,7 +128,9 @@ function HostEditor({old, onClose, onSaved}: {old?: HostView; onClose: () => voi
         <div><b>连接成功：{tested.hostname}</b> <span className="dim">{tested.kernel}</span> <RootBadge info={tested}/>
           {tested.rootErr && <div className="dim">{tested.rootErr}</div>}</div>
       </div>}
-      <div className="hint" style={{marginTop: 10}}>口令、私钥内容和 sudo 口令加密保存在 ~/.config/nfmonitor/hosts.json（仅本用户可读），密钥在同目录的 secret.key。</div>
+      <div className="hint" style={{marginTop: 10}}>{isServer()
+        ? '口令、私钥内容和 sudo 口令加密保存在服务器数据目录的 hosts.json，加密密钥由管理员单独保管（不在数据目录里）。'
+        : '口令、私钥内容和 sudo 口令加密保存在 ~/.config/nfmonitor/hosts.json（仅本用户可读），密钥在同目录的 secret.key。'}</div>
     </Modal>
   )
 }
@@ -159,17 +161,17 @@ export default function HostsPage({current, onUse, onLeave, onChanged}: {
       <div className="page-head">
         <div><h1>主机管理</h1><p>配置要监控的远程主机：通过 SSH 采集网卡、路由、连接、防火墙等信息，并可在「防火墙」页修改 ufw / firewalld</p></div>
         <span className="sp"/>
-        <button className="btn primary" disabled={!!data?.error} onClick={() => setEdit('new')}>添加主机</button>
+        {canWrite() && <button className="btn primary" disabled={!!data?.error} onClick={() => setEdit('new')}>添加主机</button>}
       </div>
       <ErrorBanner error={error || data?.error || ''}/>
       <div className="card">
         {hosts.length ? <div className="tbl-wrap"><table className="host-list">
           <thead><tr><th>名称</th><th>地址</th><th>用户 / 认证</th><th>状态</th><th>指纹</th><th/></tr></thead>
           <tbody>
-          <tr className={current === '' ? 'sel' : ''}>
+          {hasLocal() && <tr className={current === '' ? 'sel' : ''}>
             <td><b>本机</b></td><td className="muted">—</td><td className="muted">—</td><td><span className="badge good">本地</span></td><td/>
             <td className="right nowrap">{current !== '' && <button className="btn" onClick={() => onUse('')}>查看</button>}</td>
-          </tr>
+          </tr>}
           {hosts.map(h => (
             <tr key={h.id} className={current === h.id ? 'sel' : ''}>
               <td><b>{h.name}</b></td>
@@ -184,20 +186,25 @@ export default function HostsPage({current, onUse, onLeave, onChanged}: {
               <td className="right nowrap">
                 {current !== h.id && <button className="btn primary" onClick={() => onUse(h.id)}>查看</button>}{' '}
                 <button className="btn" disabled={busy === h.id} onClick={() => connect(h)}>{busy === h.id ? '处理中…' : h.connected ? '重连' : '连接'}</button>{' '}
-                {h.connected && <><button className="btn" disabled={busy === h.id} onClick={() => disconnect(h)}>断开</button>{' '}</>}
-                <button className="btn" onClick={() => setEdit(h)}>编辑</button>{' '}
-                <button className="link danger" onClick={() => setDel(h)}>删除</button>
+                {canWrite() && <>
+                  {h.connected && <><button className="btn" disabled={busy === h.id} onClick={() => disconnect(h)}>断开</button>{' '}</>}
+                  <button className="btn" onClick={() => setEdit(h)}>编辑</button>{' '}
+                  <button className="link danger" onClick={() => setDel(h)}>删除</button>
+                </>}
               </td>
             </tr>
           ))}
           </tbody>
-        </table></div> : <div className="empty">还没有远程主机。点右上角「添加主机」，填写 IP、端口、用户和认证方式。</div>}
+        </table></div> : <div className="empty">{canWrite() ? '还没有远程主机。点右上角「添加主机」，填写 IP、端口、用户和认证方式。' : '还没有纳管主机，请联系管理员添加。'}</div>}
       </div>
       <div className="card dim">
         <b>说明</b>
         <ul style={{margin: '6px 0 0', paddingLeft: 18}}>
           <li>远程主机上需要有 <code>ip</code>、<code>ss</code>、<code>ps</code>（iproute2、procps），读取防火墙需要 root：用 root 登录，或给登录用户配置 sudo。</li>
-          <li>程序启动时只看本机，不会自动连接远程主机；选中或点「查看」「连接」时才连接。点「断开」后不会自动重连。</li>
+          {isServer()
+            ? <li>服务启动后按需连接：打开「所有主机」或选中主机时才连接。点「断开」后不会自动重连，「所有主机」也会跳过它。</li>
+            : <li>程序启动时只看本机，不会自动连接远程主机；选中或点「查看」「连接」时才连接。点「断开」后不会自动重连。</li>}
+          {isServer() && <li>服务器版只支持口令和粘贴的私钥（不读服务器上的私钥文件，也不用 ssh-agent）。新增、修改、删除主机和修改防火墙前要再次输入登录口令，所有操作记入审计日志。</li>}
           <li>修改远程防火墙前会检查当前 SSH 连接是否会被切断；有风险时要求再次确认。</li>
           <li>远程主机暂不统计 UDP 流量（需要 bpftrace 探针），也不读取桌面环境的代理设置。</li>
         </ul>

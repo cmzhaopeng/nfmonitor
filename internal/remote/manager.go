@@ -14,6 +14,19 @@ type Manager struct {
 	hosts map[string]*Host
 	// OnRemove 在主机被删除、配置被修改或被手动断开时调用（API 层借此清理该主机的采样状态）。
 	OnRemove func(id string)
+	// ServerMode 为真时（服务器版）只接受口令和粘贴的私钥：私钥文件路径和 ssh-agent 指向的是
+	// 服务器上的文件 / 进程，不该由网页上的用户指定。
+	ServerMode bool
+}
+
+// ErrServerAuth 是服务器版拒绝的认证方式。
+var ErrServerAuth = errors.New("服务器版只支持口令或粘贴私钥内容（加密保存），不支持私钥文件路径和 ssh-agent")
+
+func (m *Manager) checkAuth(cfg HostConfig) error {
+	if m.ServerMode && (cfg.Auth == AuthAgent || (cfg.Auth == AuthKey && cfg.KeyPEM == "") || cfg.KeyPath != "") {
+		return ErrServerAuth
+	}
+	return nil
 }
 
 func NewManager(store *Store) *Manager {
@@ -29,6 +42,7 @@ type HostView struct {
 	HasPassphrase   bool     `json:"hasPassphrase"`
 	HasSudoPassword bool     `json:"hasSudoPassword"`
 	Connected       bool     `json:"connected"`
+	Manual          bool     `json:"manual"` // 用户手动断开，不会自动重连
 	Error           string   `json:"error,omitempty"`
 	Info            HostInfo `json:"info"`
 }
@@ -41,6 +55,7 @@ func view(cfg HostConfig, h *Host) HostView {
 	}
 	if h != nil {
 		v.Connected, v.Error, v.Info = h.Status()
+		v.Manual = h.Manual()
 	}
 	return v
 }
@@ -56,6 +71,9 @@ func (m *Manager) List() []HostView {
 	}
 	return out
 }
+
+// Configs 返回所有主机的配置（含机密，仅供本进程内部使用）。
+func (m *Manager) Configs() []HostConfig { return m.store.List() }
 
 // Get 返回一台主机的连接句柄（不会立即连接）。
 func (m *Manager) Get(id string) (*Host, error) {
@@ -84,6 +102,9 @@ func (m *Manager) Save(cfg HostConfig, secrets Secrets) (HostView, error) {
 		cfg.Password, cfg.KeyPEM, cfg.Passphrase, cfg.SudoPassword = old.Password, old.KeyPEM, old.Passphrase, old.SudoPassword
 	}
 	secrets.Apply(&cfg)
+	if err := m.checkAuth(cfg); err != nil {
+		return HostView{}, err
+	}
 	saved, err := m.store.Put(cfg)
 	if err != nil {
 		return HostView{}, err
@@ -100,6 +121,9 @@ func (m *Manager) Test(cfg HostConfig, secrets Secrets) (HostInfo, error) {
 		}
 	}
 	secrets.Apply(&cfg)
+	if err := m.checkAuth(cfg); err != nil {
+		return HostInfo{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return HostInfo{}, err
 	}
