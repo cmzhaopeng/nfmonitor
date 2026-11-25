@@ -14,6 +14,7 @@ import (
 
 	"nfmonitor/internal/api"
 	"nfmonitor/internal/priv"
+	"nfmonitor/internal/remote"
 )
 
 //go:embed all:frontend/dist
@@ -81,6 +82,10 @@ func serve(args []string) {
 	pc := priv.NewClient()
 	defer pc.Close()
 	srv := &api.Server{Priv: pc, Version: version, CheckHost: true}
+	srv.Hosts, srv.HostsErr = openHosts()
+	if srv.Hosts != nil {
+		defer srv.Hosts.Close()
+	}
 	dist, err := fs.Sub(assets, "frontend/dist")
 	if err != nil {
 		log.Fatal(err)
@@ -90,4 +95,19 @@ func serve(args []string) {
 	mux.Handle("/", http.FileServerFS(dist))
 	log.Printf("nfmonitor %s: http://%s", version, *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
+}
+
+// openHosts 打开远程主机配置（~/.config/nfmonitor/hosts.json）。失败时只能看本机，原因显示在界面上。
+func openHosts() (*remote.Manager, error) {
+	dir, err := remote.DefaultDir()
+	if err != nil {
+		log.Printf("远程主机配置不可用: %v", err)
+		return nil, err
+	}
+	st, err := remote.OpenStore(dir)
+	if err != nil {
+		log.Printf("远程主机配置不可用: %v", err)
+		return nil, err
+	}
+	return remote.NewManager(st), nil
 }

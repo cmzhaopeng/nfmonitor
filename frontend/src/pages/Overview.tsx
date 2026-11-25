@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react'
-import {Firewall, Link, ProxyInfo, RouteGet, Routing, Socket, usePoll} from '../api'
+import {Firewall, isRemote, Link, ProxyInfo, RouteGet, Routing, Socket, usePoll} from '../api'
 import {ErrorBanner, PageId} from '../App'
 import {fmtRate, KIND_LABEL} from '../format'
 import {RateChart} from '../RateChart'
@@ -61,8 +61,8 @@ export default function Overview({go}: {go: (p: PageId) => void}) {
             <div className="value">{baseChains.length} 条基链</div>
             <div className="sub">ufw {fw.data.ufwStatus === 'active' ? '已启用' : fw.data.ufwStatus === 'inactive' ? '未启用' : '未安装'} · {dropPolicies} 条默认丢弃</div>
           </> : <>
-            <div className="value">需要授权</div>
-            <div className="sub"><button className="link" style={{fontFamily: 'inherit'}} onClick={() => go('firewall')}>去防火墙页授权读取 →</button></div>
+            <div className="value">{isRemote() ? '需要 root' : '需要授权'}</div>
+            <div className="sub"><button className="link" style={{fontFamily: 'inherit'}} onClick={() => go('firewall')}>{isRemote() ? '查看原因 →' : '去防火墙页授权读取 →'}</button></div>
           </>}
         </div>
         <div className="card tile">

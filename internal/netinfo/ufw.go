@@ -62,10 +62,13 @@ type UfwInfo struct {
 }
 
 // readUfwTuples 在 root 侧读两份规则文件里的 tuple 行，每行前缀 v4 / v6。路径固定。
-func readUfwTuples() (string, error) {
+func readUfwTuples() (string, error) { return readUfwTuplesWith(os.ReadFile) }
+
+// readUfwTuplesWith 用给定的（root）读文件函数读 tuple 行；远程主机经 sudo cat 读。
+func readUfwTuplesWith(read func(string) ([]byte, error)) (string, error) {
 	var b strings.Builder
 	for _, f := range []struct{ path, fam string }{{ufwRulesV4, "v4"}, {ufwRulesV6, "v6"}} {
-		data, err := os.ReadFile(f.path)
+		data, err := read(f.path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -248,12 +251,18 @@ func orAny(s string) string {
 
 // ---- 默认策略、日志级别（全员可读的配置文件） ----
 
-// ReadUfwConfig 读默认策略、日志级别、是否启用 IPv6、开机是否启用。
+// ReadUfwConfig 读本机的默认策略、日志级别、是否启用 IPv6、开机是否启用。
 func ReadUfwConfig() (defaults map[string]string, logging string, ipv6 bool, enabled string) {
+	return ReadUfwConfigOn(Local)
+}
+
+// ReadUfwConfigOn 读 sys 上的 ufw 配置。
+func ReadUfwConfigOn(sys Sys) (defaults map[string]string, logging string, ipv6 bool, enabled string) {
+	sys = orLocal(sys)
 	defaults = map[string]string{}
 	ipv6 = true
 	pol := map[string]string{"DROP": "deny", "ACCEPT": "allow", "REJECT": "reject"}
-	for k, v := range readShellVars(ufwDefaults) {
+	for k, v := range readShellVars(sys, ufwDefaults) {
 		v = strings.ToUpper(v)
 		switch k {
 		case "DEFAULT_INPUT_POLICY":
@@ -266,7 +275,7 @@ func ReadUfwConfig() (defaults map[string]string, logging string, ipv6 bool, ena
 			ipv6 = v == "YES"
 		}
 	}
-	conf := readShellVars(ufwConf)
+	conf := readShellVars(sys, ufwConf)
 	logging = strings.ToLower(conf["LOGLEVEL"])
 	if logging == "" {
 		logging = "low"
@@ -280,9 +289,9 @@ func ReadUfwConfig() (defaults map[string]string, logging string, ipv6 bool, ena
 	return
 }
 
-func readShellVars(path string) map[string]string {
+func readShellVars(sys Sys, path string) map[string]string {
 	m := map[string]string{}
-	b, err := os.ReadFile(path)
+	b, err := sys.ReadFile(path)
 	if err != nil {
 		return m
 	}
@@ -310,12 +319,16 @@ type UfwOp struct {
 	Direction string   `json:"direction,omitempty"` // default：incoming outgoing routed
 	Policy    string   `json:"policy,omitempty"`    // default：allow deny reject
 	Level     string   `json:"level,omitempty"`     // logging：off low medium high full
+	// Confirm：远程主机上这次修改可能切断当前 SSH 连接（见 UfwLockout），用户已确认仍要执行。
+	Confirm bool `json:"confirm,omitempty"`
 }
 
 type UfwResult struct {
 	Commands [][]string `json:"commands"`
 	Output   string     `json:"output"`
 	Executed bool       `json:"executed"`
+	// Warning 非空表示这次修改可能切断管理用的 SSH 连接；执行前要带 Confirm。
+	Warning string `json:"warning,omitempty"`
 }
 
 var (
@@ -599,29 +612,52 @@ func BuildUfw(op UfwOp, cur []UfwRule, verify bool) ([][]string, error) {
 	return nil, fmt.Errorf("未知操作: %q", op.Op)
 }
 
-// ApplyUfw 在 root 进程里执行一次修改：重新读取当前规则、校验、逐条执行，遇错即停。
+// ApplyUfw 在本机 root 进程里执行一次修改：重新读取当前规则、校验、逐条执行，遇错即停。
 func ApplyUfw(op UfwOp) (UfwResult, error) {
-	res := UfwResult{Commands: [][]string{}}
 	if os.Geteuid() != 0 {
-		return res, errors.New("需要 root 权限")
+		return UfwResult{Commands: [][]string{}}, errors.New("需要 root 权限")
 	}
-	if ToolPath("ufw") == "" {
+	return ApplyUfwOn(localRoot{}, op, nil)
+}
+
+// ErrLockout 表示修改可能切断管理用的 SSH 连接，需要用户确认。
+var ErrLockout = errors.New("这次修改可能切断当前的 SSH 连接")
+
+// ApplyUfwOn 以 root 在 r 上执行一次修改。path 非空（远程主机）时先检查会不会把
+// 当前 SSH 连接挡在外面，有风险且没带 Confirm 就拒绝执行。
+func ApplyUfwOn(r RootSys, op UfwOp, path *SSHPath) (UfwResult, error) {
+	res := UfwResult{Commands: [][]string{}}
+	if !r.HasTool("ufw") {
 		return res, errors.New("ufw 未安装")
 	}
-	raw, err := readUfwTuples()
+	raw, err := readUfwTuplesWith(r.ReadFileRoot)
 	if err != nil {
 		return res, fmt.Errorf("读取 ufw 规则失败: %w", err)
 	}
-	_, _, ipv6, _ := ReadUfwConfig()
+	defaults, _, ipv6, enabled := ReadUfwConfigOn(r)
 	cur := ParseUfwTuples(raw, ipv6)
 	cmds, err := BuildUfw(op, cur, true)
 	if err != nil {
 		return res, err
 	}
 	res.Commands = cmds
+	if path != nil {
+		status := enabled
+		if out, err := r.RunRoot(15*time.Second, "ufw", "status"); err == nil {
+			if st := ParseUfwStatus(out); st != "" {
+				status = st
+			}
+		}
+		if w := UfwLockout(op, cur, defaults, status, *path); w != "" {
+			res.Warning = w
+			if !op.Confirm {
+				return res, fmt.Errorf("%w：%s", ErrLockout, w)
+			}
+		}
+	}
 	var out strings.Builder
 	run := func(c []string) error {
-		o, err := Run(30*time.Second, c[0], c[1:]...)
+		o, err := r.RunRoot(30*time.Second, c[0], c[1:]...)
 		out.WriteString("$ " + strings.Join(c, " ") + "\n" + o)
 		if err == nil && strings.HasPrefix(strings.TrimSpace(o), "ERROR") {
 			err = errors.New(strings.TrimSpace(o))

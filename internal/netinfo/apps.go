@@ -2,14 +2,10 @@ package netinfo
 
 import (
 	"net"
-	"os"
-	"os/user"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -58,9 +54,14 @@ type AppsSnapshot struct {
 	UDPError string `json:"udpError"`
 }
 
-// EnrichSockets 给每个套接字补上所属应用名和所在网卡。
-func EnrichSockets(socks []Socket) {
-	devs := addrDevs()
+// EnrichSockets 给本机的每个套接字补上所属应用名和所在网卡。
+func EnrichSockets(socks []Socket) { EnrichSocketsOn(Local, socks) }
+
+// EnrichSocketsOn 给 sys 上采到的套接字补上所属应用名和所在网卡。
+func EnrichSocketsOn(sys Sys, socks []Socket) {
+	sys = orLocal(sys)
+	devs := addrDevs(sys)
+	procs := newProcTable(sys)
 	names := map[int]string{}
 	for i := range socks {
 		s := &socks[i]
@@ -74,7 +75,7 @@ func EnrichSockets(socks []Socket) {
 		}
 		n, ok := names[s.PID]
 		if !ok {
-			n = appName(s.PID, s.Process)
+			n = procs.appName(s.PID, s.Process)
 			names[s.PID] = n
 		}
 		s.App = n
@@ -82,7 +83,10 @@ func EnrichSockets(socks []Socket) {
 }
 
 // addrDevs 返回 本机地址 → 网卡名。已连接套接字的本地地址就是它出口网卡的地址。
-func addrDevs() map[string]string {
+func addrDevs(sys Sys) map[string]string {
+	if sys.Remote() {
+		return remoteAddrDevs(sys)
+	}
 	m := map[string]string{}
 	ifs, _ := net.Interfaces()
 	for _, ifc := range ifs {
@@ -99,11 +103,52 @@ func addrDevs() map[string]string {
 	return m
 }
 
+// 远程主机的地址表：ip -j addr 比较重，缓存一会儿。
+var (
+	remoteDevsMu sync.Mutex
+	remoteDevs   = map[Sys]struct {
+		at time.Time
+		m  map[string]string
+	}{}
+)
+
+func remoteAddrDevs(sys Sys) map[string]string {
+	remoteDevsMu.Lock()
+	c, ok := remoteDevs[sys]
+	remoteDevsMu.Unlock()
+	if ok && time.Since(c.at) < 15*time.Second {
+		return c.m
+	}
+	m := map[string]string{}
+	if links, err := LinksOn(sys); err == nil {
+		for _, l := range links {
+			for _, a := range l.Addrs {
+				m[a.Local] = l.Name
+				if l.Class == "loopback" && a.Family == "inet" {
+					m["127.0.0.53"], m["127.0.0.54"] = l.Name, l.Name
+				}
+			}
+		}
+	}
+	remoteDevsMu.Lock()
+	remoteDevs[sys] = struct {
+		at time.Time
+		m  map[string]string
+	}{time.Now(), m}
+	remoteDevsMu.Unlock()
+	return m
+}
+
 // appName 优先用可执行文件名（comm 会被截断到 15 个字符，线程还可能改名）。
-func appName(pid int, comm string) string {
-	if exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe")); err == nil {
-		if b := filepath.Base(strings.TrimSuffix(exe, " (deleted)")); b != "" && b != "." && b != "/" {
+func appName(pid int, comm string) string { return newProcTable(Local).appName(pid, comm) }
+
+func (t *procTable) appName(pid int, comm string) string {
+	if e, ok := t.get(pid); ok {
+		if b := e.exe; b != "" && b != "." && b != "/" {
 			return b
+		}
+		if comm == "" {
+			return e.comm
 		}
 	}
 	return comm
@@ -122,6 +167,7 @@ type flowAcc struct {
 // UDP 没有逐套接字计数，增量由 UDP 回调（bpftrace 探针，需 root）提供。
 // 只在有人查询时采样：超过 idleAfter 没有请求就停，下次请求再继续。
 type AppTracker struct {
+	Sys    Sys                      // 被采集的主机；nil = 本机
 	Sample func() ([]Socket, error) // 返回已 Enrich 的套接字
 	UDP    func() (UDPStat, error)  // 可为 nil；返回上次调用以来的 UDP 增量
 
@@ -131,6 +177,8 @@ type AppTracker struct {
 	defDevAt time.Time
 
 	mu      sync.Mutex
+	stop    chan struct{}
+	stopped bool
 	started bool
 	lastReq time.Time
 	since   time.Time
@@ -154,10 +202,21 @@ func (t *AppTracker) Snapshot() (AppsSnapshot, error) {
 		t.started = true
 		t.since = time.Now()
 		t.acc = map[flowKey]*flowAcc{}
+		if t.stop == nil {
+			t.stop = make(chan struct{})
+		}
+		stop := t.stop
 		t.mu.Unlock()
 		t.sample()
 		go func() {
-			for range time.Tick(sampleEvery) {
+			tk := time.NewTicker(sampleEvery)
+			defer tk.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-tk.C:
+				}
 				t.mu.Lock()
 				idle := time.Since(t.lastReq) > idleAfter
 				t.mu.Unlock()
@@ -172,6 +231,19 @@ func (t *AppTracker) Snapshot() (AppsSnapshot, error) {
 	return t.snap, t.err
 }
 
+// Stop 结束后台采样（远程主机被删除时调用）。
+func (t *AppTracker) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stop == nil {
+		t.stop = make(chan struct{})
+	}
+	if !t.stopped {
+		t.stopped = true
+		close(t.stop)
+	}
+}
+
 func sockKey(s Socket) string {
 	return s.Proto + "|" + s.Local + ":" + s.LocalPort + "|" + s.Peer + ":" + s.PeerPort + "|" + strconv.Itoa(s.PID)
 }
@@ -182,6 +254,10 @@ func (t *AppTracker) sample() {
 	var udpErr error
 	if t.UDP != nil {
 		udp, udpErr = t.UDP()
+	}
+	procs := newProcTable(t.Sys)
+	if t.Sys != nil && t.Sys.Remote() && err == nil {
+		procs.all() // 远程的 ps 在加锁前取好，别让查询方跟着等 SSH
 	}
 	now := time.Now()
 	t.mu.Lock()
@@ -278,7 +354,7 @@ func (t *AppTracker) sample() {
 		a := get(name)
 		a.Listens, a.UDP = ag.listens, ag.udp
 		for _, p := range ag.procs {
-			p.User, p.Cmdline = procUserCmd(p.PID)
+			p.User, p.Cmdline = procs.userCmd(p.PID)
 			a.Procs = append(a.Procs, *p)
 		}
 		sort.Slice(a.Procs, func(i, j int) bool { return a.Procs[i].PID < a.Procs[j].PID })
@@ -404,21 +480,11 @@ func (t *AppTracker) defaultDev() string {
 	return t.defDev
 }
 
-func procUserCmd(pid int) (usr, cmd string) {
-	d := filepath.Join("/proc", strconv.Itoa(pid))
-	if b, err := os.ReadFile(filepath.Join(d, "cmdline")); err == nil {
-		cmd = strings.TrimSpace(strings.ReplaceAll(string(b), "\x00", " "))
-		if len(cmd) > 300 {
-			cmd = cmd[:300] + "…"
-		}
+func (t *procTable) userCmd(pid int) (usr, cmd string) {
+	e, _ := t.get(pid)
+	cmd = e.cmdline
+	if len(cmd) > 300 {
+		cmd = cmd[:300] + "…"
 	}
-	if st, err := os.Stat(d); err == nil {
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			usr = strconv.Itoa(int(sys.Uid))
-			if u, err := user.LookupId(usr); err == nil {
-				usr = u.Username
-			}
-		}
-	}
-	return
+	return e.user, cmd
 }
