@@ -117,10 +117,18 @@ func (h *Host) Disconnect() {
 	}
 }
 
+// Manual 报告用户是否手动断开了这台主机（之后不自动重连）。
+func (h *Host) Manual() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.manual
+}
+
 // Reconnect 是用户主动连接：清掉手动断开标记和重试间隔，立即连接。
 func (h *Host) Reconnect() (HostInfo, error) {
 	h.mu.Lock()
 	h.manual, h.lastErr = false, nil
+	h.tools = map[string]bool{} // 「重连」后重新检测装了哪些工具（例如刚装了 ufw）
 	h.mu.Unlock()
 	return h.Connect()
 }

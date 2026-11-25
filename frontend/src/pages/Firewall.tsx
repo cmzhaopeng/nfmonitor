@@ -1,5 +1,5 @@
 import {useMemo, useState} from 'react'
-import {elevate, Firewall, FwChain, FwTable, Meta, usePoll} from '../api'
+import {canWrite, elevate, Firewall, FwChain, FwTable, Meta, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtCount} from '../format'
 import UfwPanel from './Ufw'
@@ -240,8 +240,11 @@ export default function FirewallPage({onPrivChange, meta}: {onPrivChange: () => 
           <div>{sel ? <ChainDetail r={sel} all={all} onJump={select}/> : <div className="card empty">从左侧选择一条链</div>}</div>
         </div>}
 
-        {tab === 'ufw' && data.ufw && <UfwPanel ufw={data.ufw} onChanged={reload}/>}
-        {tab === 'firewalld' && data.firewalld && <FirewalldPanel info={data.firewalld} onChanged={reload}/>}
+        {(tab === 'ufw' || tab === 'firewalld') && !canWrite() && <div className="banner warn">只读账号：可以查看规则，不能修改。</div>}
+        <fieldset disabled={!canWrite()} style={{border: 0, padding: 0, margin: 0, minWidth: 0}}>
+          {tab === 'ufw' && data.ufw && <UfwPanel ufw={data.ufw} onChanged={reload}/>}
+          {tab === 'firewalld' && data.firewalld && <FirewalldPanel info={data.firewalld} onChanged={reload}/>}
+        </fieldset>
 
         {tab === 'raw' && <div className="card">
           <div className="card-head">

@@ -183,14 +183,22 @@ type storedHost struct {
 type storeFile struct {
 	Version int          `json:"version"`
 	Hosts   []storedHost `json:"hosts"`
+	// KeyCheck 是用当前密钥加密的固定串：启动时先解它，密钥不对立即报错，而不是等到用某台主机时才发现。
+	KeyCheck string `json:"keyCheck,omitempty"`
 }
 
 // Store 保存主机列表：<配置目录>/nfmonitor/hosts.json（0600），目录 0700。
+//
+// 加密密钥有两种来源：
+//   - OpenStore：同目录下的 secret.key（不存在时自动生成）。桌面版用：文件都在用户自己的配置目录里。
+//   - OpenStoreWithKey：调用方提供（服务器版从环境变量 / 外部密钥文件读入），目录里不会出现 secret.key，
+//     拿到数据目录（备份、磁盘快照）不等于拿到口令。
 type Store struct {
-	dir   string
-	mu    sync.Mutex
-	hosts []HostConfig
-	key   []byte
+	dir      string
+	mu       sync.Mutex
+	hosts    []HostConfig
+	key      []byte
+	fixedKey bool // 密钥由调用方提供：不读写 secret.key
 }
 
 // DefaultDir 是 $XDG_CONFIG_HOME/nfmonitor（通常 ~/.config/nfmonitor）。
@@ -202,9 +210,23 @@ func DefaultDir() (string, error) {
 	return filepath.Join(d, "nfmonitor"), nil
 }
 
-// OpenStore 读取 dir 下的主机列表（文件不存在时为空列表）。
+// OpenStore 读取 dir 下的主机列表（文件不存在时为空列表），密钥是同目录的 secret.key。
 func OpenStore(dir string) (*Store, error) {
-	s := &Store{dir: dir}
+	return openStore(&Store{dir: dir})
+}
+
+// KeySize 是外部密钥的长度（AES-256）。
+const KeySize = 32
+
+// OpenStoreWithKey 读取 dir 下的主机列表，机密字段用调用方提供的 32 字节密钥加解密。
+func OpenStoreWithKey(dir string, key []byte) (*Store, error) {
+	if len(key) != KeySize {
+		return nil, fmt.Errorf("密钥长度应为 %d 字节，实际 %d", KeySize, len(key))
+	}
+	return openStore(&Store{dir: dir, key: append([]byte(nil), key...), fixedKey: true})
+}
+
+func openStore(s *Store) (*Store, error) {
 	b, err := os.ReadFile(s.path())
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -219,6 +241,11 @@ func OpenStore(dir string) (*Store, error) {
 	var f storeFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, fmt.Errorf("%s 格式错误: %w", s.path(), err)
+	}
+	if f.KeyCheck != "" {
+		if v, err := s.decrypt("-", "keyCheck", f.KeyCheck); err != nil || v != keyCheckText {
+			return nil, fmt.Errorf("%s 里的机密无法用当前密钥解开（密钥是否换过？）", s.path())
+		}
 	}
 	for _, sh := range f.Hosts {
 		h := sh.HostConfig
@@ -323,6 +350,11 @@ func (s *Store) save(hosts []HostConfig) error {
 		return err
 	}
 	f := storeFile{Version: 1, Hosts: []storedHost{}}
+	kc, err := s.encrypt("-", "keyCheck", keyCheckText)
+	if err != nil {
+		return err
+	}
+	f.KeyCheck = kc
 	for _, h := range hosts {
 		sh := storedHost{HostConfig: h}
 		for _, x := range []struct {
@@ -373,8 +405,10 @@ func writeFileAtomic(path string, b []byte) error {
 
 // ---- 加密 ----
 
+const keyCheckText = "nfmonitor-key-check"
+
 func (s *Store) loadKey(create bool) ([]byte, error) {
-	if s.key != nil {
+	if s.key != nil || s.fixedKey {
 		return s.key, nil
 	}
 	b, err := os.ReadFile(s.keyPath())

@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"time"
 
 	"nfmonitor/internal/api"
+	"nfmonitor/internal/netinfo"
 	"nfmonitor/internal/priv"
 	"nfmonitor/internal/remote"
+	"nfmonitor/internal/server"
 )
 
 //go:embed all:frontend/dist
@@ -41,6 +44,14 @@ func main() {
 		case "serve":
 			serve(os.Args[2:])
 			return
+		case "server":
+			// 服务器版：部署在服务器上，登录后集中监控多台主机，见 internal/server。
+			dist, err := fs.Sub(assets, "frontend/dist")
+			if err != nil {
+				log.Fatal(err)
+			}
+			server.Main(os.Args[2:], dist, version)
+			return
 		case "dump":
 			// 调试用：不起服务，直接在进程内调一次接口。例：nfmonitor dump /api/links
 			if len(os.Args) < 3 {
@@ -61,7 +72,7 @@ func main() {
 			fmt.Println(version)
 			return
 		case "help", "--help", "-h":
-			fmt.Println("用法:\n  nfmonitor                 打开桌面窗口\n  nfmonitor serve [-addr 127.0.0.1:8787]   以网页方式提供界面\n  nfmonitor version")
+			fmt.Println("用法:\n  nfmonitor                 打开桌面窗口\n  nfmonitor serve [-addr 127.0.0.1:8787]   以网页方式提供界面（仅本机，Linux）\n  nfmonitor server -h       服务器版：登录后集中监控多台主机\n  nfmonitor version")
 			return
 		}
 	}
@@ -72,6 +83,9 @@ func serve(args []string) {
 	fl := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fl.String("addr", "127.0.0.1:8787", "监听地址（仅支持回环地址）")
 	fl.Parse(args)
+	if runtime.GOOS != "linux" {
+		log.Fatal("serve 只在 Linux 上提供（它靠 /proc 校验访问者是同一用户）。Windows 上直接运行 nfmonitor.exe 打开窗口，或用 nfmonitor server（带登录）")
+	}
 	host, _, err := net.SplitHostPort(*addr)
 	if err != nil {
 		log.Fatal(err)
@@ -81,7 +95,7 @@ func serve(args []string) {
 	}
 	pc := priv.NewClient()
 	defer pc.Close()
-	srv := &api.Server{Priv: pc, Version: version, CheckHost: true}
+	srv := &api.Server{Priv: pc, Version: version, CheckHost: true, Mode: "serve", NoLocal: !netinfo.LocalSupported}
 	srv.Hosts, srv.HostsErr = openHosts()
 	if srv.Hosts != nil {
 		defer srv.Hosts.Close()
