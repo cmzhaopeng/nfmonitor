@@ -51,8 +51,8 @@ func (s *Server) Handler() http.Handler {
 		return netinfo.CollectProxy(links, routing, socks), nil
 	})
 	mux.HandleFunc("POST /api/elevate", func(w http.ResponseWriter, r *http.Request) {
-		// 自定义请求头让跨站页面无法在不经预检的情况下触发授权弹窗。
-		if r.Header.Get("X-Nfmonitor") == "" {
+		// 自定义请求头让跨站页面无法在不经预检的情况下触发授权弹窗；serve 模式下还要求同一用户。
+		if r.Header.Get("X-Nfmonitor") == "" || (s.CheckHost && !s.sameUser(r)) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -116,12 +116,23 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
+func (s *Server) sameUser(r *http.Request) bool {
+	uid, err := peerUID(r.RemoteAddr)
+	return err == nil && uid == os.Getuid()
+}
+
 // sameOrigin 挡跨站请求：必须带自定义头（跨站页面要先过 CORS 预检，而这里不响应预检）、
 // 内容是 JSON；serve 模式下带了 Origin 时还必须与 Host 一致（桌面版资源服务器外部访问不到，
 // 且 WebView 的 Origin 是 wails:// 之类，不做这项比对）。
 func (s *Server) sameOrigin(r *http.Request) bool {
 	if r.Header.Get("X-Nfmonitor") == "" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return false
+	}
+	// serve 模式：回环地址上本机任何用户都连得到，修改类请求只接受与本程序同一用户的连接。
+	if s.CheckHost {
+		if !s.sameUser(r) {
+			return false
+		}
 	}
 	if o := r.Header.Get("Origin"); o != "" && s.CheckHost {
 		u, err := url.Parse(o)

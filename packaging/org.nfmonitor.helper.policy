@@ -3,12 +3,12 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>nfmonitor</vendor>
-  <!-- 只匹配 `pkexec /usr/bin/nfmonitor helper`：只读助手，见 internal/priv。 -->
+  <!-- 只匹配 `pkexec /usr/bin/nfmonitor helper`：常驻 root 助手，执行固定的查看命令，以及用户在 ufw 策略页确认的修改，见 internal/priv。 -->
   <action id="org.nfmonitor.helper">
-    <description>Read firewall rules, socket owners and UDP traffic counters</description>
-    <description xml:lang="zh_CN">读取防火墙规则、套接字归属与 UDP 流量计数</description>
-    <message>nfmonitor needs administrator rights to read firewall rules and per-process UDP traffic (read-only)</message>
-    <message xml:lang="zh_CN">nfmonitor 需要管理员权限来读取防火墙规则和各进程的 UDP 流量（只读，不做任何修改）</message>
+    <description>Read firewall rules, socket owners and UDP traffic counters; apply ufw changes you confirm</description>
+    <description xml:lang="zh_CN">读取防火墙规则、套接字归属与 UDP 流量计数；执行你确认的 ufw 修改</description>
+    <message>nfmonitor needs administrator rights to read firewall rules and per-process UDP traffic, and to apply ufw changes you confirm in the ufw page</message>
+    <message xml:lang="zh_CN">nfmonitor 需要管理员权限来读取防火墙规则和各进程的 UDP 流量；授权后在「ufw 策略」页确认的修改也不再重复询问密码</message>
     <icon_name>nfmonitor</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>
@@ -18,7 +18,7 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/nfmonitor</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">helper</annotate>
   </action>
-  <!-- 只匹配 `pkexec /usr/bin/nfmonitor ufw-apply`：一次性执行一条 ufw 修改，见 internal/netinfo/ufw.go。 -->
+  <!-- 只匹配 `pkexec /usr/bin/nfmonitor ufw-apply`：未授权常驻助手时，一次性执行一条 ufw 修改，见 internal/netinfo/ufw.go。 -->
   <action id="org.nfmonitor.ufw">
     <description>Change ufw firewall rules</description>
     <description xml:lang="zh_CN">修改 ufw 防火墙规则</description>
