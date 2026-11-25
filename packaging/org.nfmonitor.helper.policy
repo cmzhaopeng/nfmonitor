@@ -18,4 +18,19 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/nfmonitor</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">helper</annotate>
   </action>
+  <!-- 只匹配 `pkexec /usr/bin/nfmonitor ufw-apply`：一次性执行一条 ufw 修改，见 internal/netinfo/ufw.go。 -->
+  <action id="org.nfmonitor.ufw">
+    <description>Change ufw firewall rules</description>
+    <description xml:lang="zh_CN">修改 ufw 防火墙规则</description>
+    <message>nfmonitor needs administrator rights to change ufw firewall rules and policies</message>
+    <message xml:lang="zh_CN">nfmonitor 需要管理员权限来修改 ufw 防火墙规则与策略</message>
+    <icon_name>nfmonitor</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/nfmonitor</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">ufw-apply</annotate>
+  </action>
 </policyconfig>

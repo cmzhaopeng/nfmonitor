@@ -18,7 +18,9 @@ var PrivCommands = map[string][]string{
 	"ip6tables-legacy-save": {"ip6tables-legacy-save", "-c"},
 	"ufw":                   {"ufw", "status", "verbose"},
 	"ufw-numbered":          {"ufw", "status", "numbered"},
-	"ss":                    append([]string{"ss"}, SsArgs...),
+	// 读 /etc/ufw/user.rules、user6.rules 里 ufw 自己写的 tuple 行（路径固定，见 ufw.go）。
+	"ufw-tuples": {"ufw"},
+	"ss":         append([]string{"ss"}, SsArgs...),
 	// 常驻的 bpftrace 探针（脚本固定，见 udp.go）；每次调用取走上次以来的 UDP 流量增量。
 	"udpstat": {"bpftrace", "-q", "-e", udpScript},
 }
@@ -29,8 +31,11 @@ func RunPrivCommand(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("不允许的命令: %s", name)
 	}
-	if name == "udpstat" {
+	switch name {
+	case "udpstat":
 		return udpMon.drain()
+	case "ufw-tuples":
+		return readUfwTuples()
 	}
 	return Run(15*time.Second, argv[0], argv[1:]...)
 }
@@ -80,6 +85,7 @@ type Firewall struct {
 	Raw        map[string]string `json:"raw"`       // 各命令原始输出
 	Errors     map[string]string `json:"errors"`    // 各命令的失败原因
 	UfwStatus  string            `json:"ufwStatus"` // active | inactive | ""(未安装/未知)
+	Ufw        *UfwInfo          `json:"ufw"`       // 未安装 ufw 时为 null
 	Tools      map[string]string `json:"tools"`     // 已安装的工具及版本
 }
 
@@ -129,6 +135,20 @@ func CollectFirewall(runPriv func(string) (string, error)) Firewall {
 		if fw.UfwStatus == "active" {
 			get("ufw-numbered") // 未启用时 numbered 只有一行状态，没必要取
 		}
+	}
+	if ToolPath("ufw") != "" {
+		u := &UfwInfo{Status: fw.UfwStatus, Rules: []UfwRule{}}
+		var enabled string
+		u.Defaults, u.Logging, u.IPv6, enabled = ReadUfwConfig()
+		if u.Status == "" {
+			u.Status = enabled // 没授权时按 ufw.conf 的 ENABLED 推断
+		}
+		if out, err := runPriv("ufw-tuples"); err != nil {
+			u.RulesError = err.Error()
+		} else {
+			u.Rules = ParseUfwTuples(out, u.IPv6)
+		}
+		fw.Ufw = u
 	}
 	return fw
 }

@@ -20,7 +20,7 @@ import (
 var assets embed.FS
 
 // version 可在构建时用 -ldflags "-X main.version=1.2.3" 覆盖。
-var version = "0.3.0"
+var version = "0.4.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -28,6 +28,12 @@ func main() {
 		case "helper":
 			// 由 pkexec 以 root 启动；只读白名单命令，见 internal/priv。
 			if err := priv.ServeHelper(os.Stdin, os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "ufw-apply":
+			// 由 pkexec 以 root 启动：从 stdin 读一次 ufw 修改，重新校验后执行，见 internal/priv。
+			if err := priv.ServeUfwApply(os.Stdin, os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return

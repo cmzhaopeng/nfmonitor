@@ -54,9 +54,23 @@ export interface FwChain {
 }
 export interface FwObject { kind: string; name: string; raw: string }
 export interface FwTable { family: string; name: string; backend: string; owner: string; chains: FwChain[]; objects: FwObject[] }
+export interface UfwRule {
+  num: number; v6: boolean; route: boolean; action: 'allow' | 'deny' | 'reject' | 'limit'; log: '' | 'log' | 'log-all'
+  dir: 'in' | 'out'; ifaceIn: string; ifaceOut: string; proto: string
+  src: string; sport: string; sapp: string; dst: string; dport: string; dapp: string; comment: string; spec: string[]
+}
+export interface UfwInfo {
+  status: string; logging: string; defaults: Record<'incoming' | 'outgoing' | 'routed', string>
+  ipv6: boolean; rules: UfwRule[]; rulesError?: string
+}
+export interface UfwOp {
+  op: 'add' | 'delete' | 'replace' | 'enable' | 'disable' | 'default' | 'logging'
+  rule?: Partial<UfwRule>; position?: number; old?: UfwRule; direction?: string; policy?: string; level?: string
+}
+export interface UfwResult { commands: string[][]; output: string; executed: boolean }
 export interface Firewall {
   privileged: boolean; tables: FwTable[]; raw: Record<string, string>; errors: Record<string, string>
-  ufwStatus: string; tools: Record<string, string>
+  ufwStatus: string; ufw: UfwInfo | null; tools: Record<string, string>
 }
 export interface Meta { version: string; hostname: string; priv: 'root' | 'helper' | 'none' }
 
@@ -69,6 +83,13 @@ export async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const elevate = () =>
   getJSON<{priv: string}>('/api/elevate', {method: 'POST', headers: {'X-Nfmonitor': '1'}})
+
+const postJSON = <T,>(url: string, body: unknown) =>
+  getJSON<T>(url, {method: 'POST', headers: {'X-Nfmonitor': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+/** 只生成将要执行的 ufw 命令，不执行。 */
+export const ufwPreview = (op: UfwOp) => postJSON<UfwResult>('/api/ufw/preview', op)
+/** 真正执行（会弹系统授权框）。 */
+export const ufwApply = (op: UfwOp) => postJSON<UfwResult>('/api/ufw/apply', op)
 
 export interface Polled<T> { data: T | null; error: string; loading: boolean; reload: () => void }
 

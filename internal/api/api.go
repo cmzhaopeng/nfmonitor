@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -62,6 +63,36 @@ func (s *Server) Handler() http.Handler {
 			return map[string]any{"priv": s.Priv.Status()}, nil
 		}, r)
 	})
+	// ufw 修改：preview 只生成命令；apply 会弹系统授权框并真正执行。
+	ufw := func(path string, apply bool) {
+		mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
+			if !s.sameOrigin(r) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			reply(w, func(r *http.Request) (any, error) {
+				var op netinfo.UfwOp
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&op); err != nil {
+					return nil, err
+				}
+				if apply {
+					return s.Priv.ApplyUfw(op)
+				}
+				var cur []netinfo.UfwRule
+				if out, err := s.Priv.Run("ufw-tuples"); err == nil {
+					_, _, ipv6, _ := netinfo.ReadUfwConfig()
+					cur = netinfo.ParseUfwTuples(out, ipv6)
+				}
+				cmds, err := netinfo.BuildUfw(op, cur, false)
+				if err != nil {
+					return nil, err
+				}
+				return netinfo.UfwResult{Commands: cmds}, nil
+			}, r)
+		})
+	}
+	ufw("/api/ufw/preview", false)
+	ufw("/api/ufw/apply", true)
 	var h http.Handler = mux
 	if os.Getenv("NFMONITOR_DEBUG") != "" { // 排查用：把每个接口请求打到 stderr
 		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +114,22 @@ func (s *Server) Handler() http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// sameOrigin 挡跨站请求：必须带自定义头（跨站页面要先过 CORS 预检，而这里不响应预检）、
+// 内容是 JSON；serve 模式下带了 Origin 时还必须与 Host 一致（桌面版资源服务器外部访问不到，
+// 且 WebView 的 Origin 是 wails:// 之类，不做这项比对）。
+func (s *Server) sameOrigin(r *http.Request) bool {
+	if r.Header.Get("X-Nfmonitor") == "" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return false
+	}
+	if o := r.Header.Get("Origin"); o != "" && s.CheckHost {
+		u, err := url.Parse(o)
+		if err != nil || u.Host != r.Host {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) sockets() ([]netinfo.Socket, error) {

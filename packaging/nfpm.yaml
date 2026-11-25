@@ -13,7 +13,7 @@ license: MIT
 description: |
   nfmonitor — 本机网络流量与规则查看
   图形化展示网卡、路由与策略路由、代理与 TUN、nftables / iptables / ufw 规则、
-  套接字与按进程流量。只读，不修改任何系统状态。
+  套接字与按进程流量；可图形化管理 ufw 规则与策略，其余功能只读。
 contents:
   - src: ./build/bin/nfmonitor
     dst: /usr/bin/nfmonitor
