@@ -240,6 +240,33 @@ export default function UfwPanel({ufw, onChanged}: {ufw: UfwInfo; onChanged: () 
   const ifaces = (links.data || []).map(l => l.name)
 
   const finished = (r: UfwResult) => { setDlg(null); setDone(r); onChanged() }
+
+  // ---- 调整顺序：同一方向内从上到下匹配，只在同方向的规则之间移动 ----
+  const [moving, setMoving] = useState('')
+  const [moveErr, setMoveErr] = useState('')
+  const [drag, setDrag] = useState<{from: string; over: string} | null>(null)
+  const canMove = !ql
+  const sameKind = (g: Group) => groups.filter(x => kindOf(x.r) === kindOf(g.r))
+  /** 把 g 放到 target 之前（target 为 undefined = 末尾）。 */
+  const moveBefore = async (g: Group, target?: Group) => {
+    setMoving(g.key); setMoveErr('')
+    try { setDone(await ufwApply({op: 'move', old: g.r, before: target?.r})); onChanged() } catch (e: any) { setMoveErr(String(e.message || e)) }
+    setMoving('')
+  }
+  /** 把 g 放到 target 之后：即 target 在全部规则里的下一组之前。 */
+  const moveAfter = (g: Group, target: Group) => {
+    const rest = groups.filter(x => x.key !== g.key)
+    return moveBefore(g, rest[rest.indexOf(target) + 1])
+  }
+  const up = (g: Group) => { const k = sameKind(g); const i = k.indexOf(g); return i > 0 ? k[i - 1] : undefined }
+  const down = (g: Group) => { const k = sameKind(g); const i = k.indexOf(g); return i < k.length - 1 ? k[i + 1] : undefined }
+  const dropOn = (target: Group) => {
+    const g = groups.find(x => x.key === drag?.from)
+    setDrag(null)
+    if (!g || g === target || kindOf(g.r) !== kindOf(target.r)) return
+    // 往下拖放在目标之后，往上拖放在目标之前（占据目标的位置）。
+    if (groups.indexOf(g) < groups.indexOf(target)) moveAfter(g, target); else moveBefore(g, target)
+  }
   const close = () => setDlg(null)
   const confirm = (title: string, op: UfwOp, ok: string, body?: React.ReactNode, danger?: boolean) => setDlg({t: 'confirm', title, op, ok, body, danger})
 
@@ -305,18 +332,37 @@ export default function UfwPanel({ufw, onChanged}: {ufw: UfwInfo; onChanged: () 
           <button className="btn primary" onClick={() => setDlg({t: 'edit'})}>＋ 添加规则</button>
         </div>
         {ufw.rulesError && <div className="form-err" style={{marginBottom: 8}}>读取规则失败：{ufw.rulesError}</div>}
+        {moveErr && <div className="form-err" style={{marginBottom: 8}}>调整顺序失败：{moveErr}</div>}
+        <div className="hint" style={{marginBottom: 6}}>
+          同一方向（入站 / 出站 / 转发）的规则从上到下匹配，第一条命中的生效：拖动整行或用 ↑ ↓ 调整优先级（每次移动都会立即应用）。
+          不同方向的规则互不影响，所以只能在同方向之间移动。{!canMove && ' 搜索时不能调整顺序。'}
+        </div>
         {shown.length ? <div className="tbl-wrap"><table className="ufw-tbl">
           <thead><tr>
-            <th className="right">#</th><th>方向</th><th>动作</th><th>协议</th><th>源地址</th><th>源端口</th><th>目的地址</th><th>目的端口</th>
+            <th className="right">#</th><th className="mv" title="拖动或用箭头调整优先级">顺序</th><th>方向</th><th>动作</th><th>协议</th><th>源地址</th><th>源端口</th><th>目的地址</th><th>目的端口</th>
             <th>网卡</th><th>IP</th><th>备注</th><th className="right">操作</th>
           </tr></thead>
           <tbody>{shown.map(g => {
             const r = g.r
             const fams = [...new Set(g.rules.map(x => x.v6 ? 'v6' : 'v4'))].join('+')
             const app = !!(r.sapp || r.dapp)
+            const movable = canMove && !app && !moving
+            const u = up(g), dn = down(g)
+            const dropOk = !!drag && drag.from !== g.key && kindOf(g.r) === kindOf(groups.find(x => x.key === drag.from)!.r)
             return (
-              <tr key={g.key}>
+              <tr key={g.key} draggable={movable} className={(moving === g.key ? 'busy ' : '') + (drag?.from === g.key ? 'dragging ' : '') + (dropOk && drag?.over === g.key ? 'drop-' + (groups.findIndex(x => x.key === drag.from) < groups.indexOf(g) ? 'below' : 'above') : '')}
+                  onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', g.key); setDrag({from: g.key, over: ''}) }}
+                  onDragEnd={() => setDrag(null)}
+                  onDragOver={e => { if (dropOk) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (drag!.over !== g.key) setDrag({...drag!, over: g.key}) } }}
+                  onDrop={e => { e.preventDefault(); dropOn(g) }}>
                 <td className="right num muted nowrap">{g.nums.join(', ')}</td>
+                <td className="mv nowrap">
+                  {moving === g.key ? <span className="muted">移动中…</span> : <>
+                    <span className={'grip' + (movable ? '' : ' off')} title={app ? '应用配置（app）规则请用命令行调整' : !canMove ? '清空搜索后才能调整顺序' : '拖动调整顺序'}>⠿</span>
+                    <button className="arrow" disabled={!movable || !u} title={u ? `移到 #${u.nums[0]} 之前` : '已是同方向第一条'} onClick={() => moveBefore(g, u)}>↑</button>
+                    <button className="arrow" disabled={!movable || !dn} title={dn ? `移到 #${dn.nums[0]} 之后` : '已是同方向最后一条'} onClick={() => moveAfter(g, dn!)}>↓</button>
+                  </>}
+                </td>
                 <td className="nowrap">{KIND_LABEL[kindOf(r)]}{r.log && <span className="tag" style={{marginLeft: 4}} title={r.log === 'log' ? '记录新连接' : '记录所有包'}>日志</span>}</td>
                 <td><ActionBadge r={r}/></td>
                 <td>{r.proto === 'any' ? <Any/> : r.proto.toUpperCase()}</td>

@@ -278,3 +278,13 @@ pre.raw.cmd { padding: 8px 10px; max-height: 200px; white-space: pre-wrap; overf
 .form-sec { grid-column: span 2; font-size: 12px; font-weight: 600; color: var(--text-2); border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px; }
 .form input:disabled { opacity: .55; }
 .ufw-tbl .link { font-family: inherit; }
+.ufw-tbl .mv { width: 1%; }
+.ufw-tbl .grip { cursor: grab; color: var(--muted); padding: 0 4px; user-select: none; }
+.ufw-tbl .grip.off { cursor: default; opacity: .35; }
+.ufw-tbl .arrow { border: 1px solid var(--border); background: var(--surface); border-radius: 4px; padding: 0 5px; margin-left: 2px; cursor: pointer; color: var(--text-2); line-height: 18px; }
+.ufw-tbl .arrow:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.ufw-tbl .arrow:disabled { opacity: .3; cursor: default; }
+.ufw-tbl tr.dragging td { opacity: .45; }
+.ufw-tbl tr.busy td { opacity: .6; }
+.ufw-tbl tr.drop-above td { box-shadow: inset 0 2px 0 var(--accent); }
+.ufw-tbl tr.drop-below td { box-shadow: inset 0 -2px 0 var(--accent); }
