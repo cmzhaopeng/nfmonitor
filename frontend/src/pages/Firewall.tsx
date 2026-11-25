@@ -14,10 +14,10 @@ const HOOK_DESC: Record<string, string> = {
 }
 const BACKEND_LABEL: Record<string, string> = {nft: 'nftables', 'iptables-nft': 'iptables（nft 后端）', 'iptables-legacy': 'iptables（legacy）'}
 const RAW_LABEL: Record<string, string> = {
-  nft: 'nft list ruleset', ufw: 'ufw status verbose', 'iptables-save': 'iptables-save', 'ip6tables-save': 'ip6tables-save',
+  nft: 'nft list ruleset', ufw: 'ufw status verbose', 'ufw-numbered': 'ufw status numbered', 'iptables-save': 'iptables-save', 'ip6tables-save': 'ip6tables-save',
   'iptables-legacy-save': 'iptables-legacy-save', 'ip6tables-legacy-save': 'ip6tables-legacy-save',
 }
-const RAW_ORDER = ['ufw', 'nft', 'iptables-save', 'ip6tables-save', 'iptables-legacy-save', 'ip6tables-legacy-save']
+const RAW_ORDER = ['ufw', 'ufw-numbered', 'nft', 'iptables-save', 'ip6tables-save', 'iptables-legacy-save', 'ip6tables-legacy-save']
 
 function PolicyBadge({c}: {c: FwChain}) {
   if (!c.base) return null

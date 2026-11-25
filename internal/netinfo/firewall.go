@@ -17,6 +17,7 @@ var PrivCommands = map[string][]string{
 	"iptables-legacy-save":  {"iptables-legacy-save", "-c"},
 	"ip6tables-legacy-save": {"ip6tables-legacy-save", "-c"},
 	"ufw":                   {"ufw", "status", "verbose"},
+	"ufw-numbered":          {"ufw", "status", "numbered"},
 	"ss":                    append([]string{"ss"}, SsArgs...),
 	// 常驻的 bpftrace 探针（脚本固定，见 udp.go）；每次调用取走上次以来的 UDP 流量增量。
 	"udpstat": {"bpftrace", "-q", "-e", udpScript},
@@ -124,14 +125,38 @@ func CollectFirewall(runPriv func(string) (string, error)) Firewall {
 		}
 	}
 	if out, ok := get("ufw"); ok {
-		switch {
-		case strings.Contains(out, "Status: active"):
-			fw.UfwStatus = "active"
-		case strings.Contains(out, "Status: inactive"):
-			fw.UfwStatus = "inactive"
+		fw.UfwStatus = ParseUfwStatus(out)
+		if fw.UfwStatus == "active" {
+			get("ufw-numbered") // 未启用时 numbered 只有一行状态，没必要取
 		}
 	}
 	return fw
+}
+
+// ParseUfwStatus 从 `ufw status` 输出里取状态：active | inactive | ""(认不出)。
+// 正常情况下输出是英文（见 cEnv）；中文是兜底，防止 helper 环境里语言变量没清干净。
+func ParseUfwStatus(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		k, v, ok := strings.Cut(l, ":")
+		if !ok {
+			k, v, ok = strings.Cut(l, "：")
+		}
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if k != "Status" && k != "状态" {
+			continue
+		}
+		switch v {
+		case "active", "激活":
+			return "active"
+		case "inactive", "不活动":
+			return "inactive"
+		}
+	}
+	return ""
 }
 
 var (

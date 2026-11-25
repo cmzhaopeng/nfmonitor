@@ -128,3 +128,33 @@ func TestParseIptablesSave(t *testing.T) {
 		t.Errorf("empty ruleset should be nil, got %+v", got)
 	}
 }
+
+func TestParseUfwStatus(t *testing.T) {
+	cases := map[string]string{
+		"Status: active\nLogging: on (low)\n": "active",
+		"Status: inactive\n":                  "inactive",
+		"状态： 激活\n\n     至   动作   来自\n":        "active",
+		"状态：不活动\n":                            "inactive",
+		"ERROR: You need to be root\n":        "",
+	}
+	for in, want := range cases {
+		if got := ParseUfwStatus(in); got != want {
+			t.Errorf("ParseUfwStatus(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCEnvDropsLanguage(t *testing.T) {
+	t.Setenv("LANGUAGE", "zh_CN:en")
+	t.Setenv("LC_MESSAGES", "zh_CN.UTF-8")
+	seen := map[string]bool{}
+	for _, kv := range cEnv() {
+		if kv == "LANGUAGE=zh_CN:en" || kv == "LC_MESSAGES=zh_CN.UTF-8" {
+			t.Errorf("leaked %s", kv)
+		}
+		seen[kv] = true
+	}
+	if !seen["LC_ALL=C"] || !seen["LANGUAGE=C"] {
+		t.Errorf("C locale not forced")
+	}
+}

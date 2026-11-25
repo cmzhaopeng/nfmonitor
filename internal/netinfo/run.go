@@ -36,7 +36,7 @@ func Run(timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p, args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	cmd.Env = cEnv()
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -47,6 +47,20 @@ func Run(timeout time.Duration, name string, args ...string) (string, error) {
 		return out.String(), fmt.Errorf("%s: %s", name, msg)
 	}
 	return out.String(), nil
+}
+
+// cEnv 返回去掉所有语言设置、强制 C 语言环境的环境变量，保证工具输出是英文、格式稳定。
+// 光设 LC_ALL=C 不够：Python 写的工具（如 ufw）用 gettext 时优先看 LANGUAGE，
+// 不遵守 GNU 的"C 语言环境下忽略 LANGUAGE"规则，pkexec 也会把 LANGUAGE 透传给 helper。
+func cEnv() []string {
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "LANG=") || strings.HasPrefix(kv, "LANGUAGE=") || strings.HasPrefix(kv, "LC_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "LC_ALL=C", "LANG=C", "LANGUAGE=C")
 }
 
 func run(name string, args ...string) (string, error) {
