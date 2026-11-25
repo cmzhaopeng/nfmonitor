@@ -61,7 +61,12 @@ type Host struct {
 	lastUse  time.Time
 	tools    map[string]bool
 	closed   bool
+	// manual 表示用户在界面上点了「断开」：之后的采集请求不会自动重连，直到再点「连接」。
+	manual bool
 }
+
+// ErrDisconnected 是用户手动断开后，采集请求得到的错误。
+var ErrDisconnected = errors.New("已断开连接：点「连接」重新连接")
 
 func newHost(cfg HostConfig) *Host {
 	return &Host{cfg: cfg, sem: make(chan struct{}, maxSessions), tools: map[string]bool{}}
@@ -101,6 +106,25 @@ func (h *Host) Close() {
 	}
 }
 
+// Disconnect 是用户手动断开：关闭连接，并且在 Reconnect 之前不再自动重连。
+func (h *Host) Disconnect() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.manual, h.lastErr = true, nil
+	if h.client != nil {
+		h.client.Close()
+		h.client = nil
+	}
+}
+
+// Reconnect 是用户主动连接：清掉手动断开标记和重试间隔，立即连接。
+func (h *Host) Reconnect() (HostInfo, error) {
+	h.mu.Lock()
+	h.manual, h.lastErr = false, nil
+	h.mu.Unlock()
+	return h.Connect()
+}
+
 func (h *Host) conn() (*ssh.Client, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -110,6 +134,9 @@ func (h *Host) conn() (*ssh.Client, error) {
 	}
 	if h.closed {
 		return nil, errors.New("主机已删除")
+	}
+	if h.manual {
+		return nil, ErrDisconnected
 	}
 	if h.lastErr != nil && time.Since(h.lastFail) < retryAfter {
 		return nil, h.lastErr

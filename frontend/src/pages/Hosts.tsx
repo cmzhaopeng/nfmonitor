@@ -1,6 +1,6 @@
 import {useState} from 'react'
 import {
-  AuthKind, connectHost, deleteHost, HostConfig, HostInfo, HostKeyProbe, HostView, probeHost, saveHost, Secrets, testHost, usePoll,
+  AuthKind, connectHost, deleteHost, disconnectHost, HostConfig, HostInfo, HostKeyProbe, HostView, probeHost, saveHost, Secrets, testHost, usePoll,
 } from '../api'
 import {ErrorBanner} from '../App'
 import {Modal} from './Ufw'
@@ -133,7 +133,9 @@ function HostEditor({old, onClose, onSaved}: {old?: HostView; onClose: () => voi
   )
 }
 
-export default function HostsPage({current, onUse, onChanged}: {current: string; onUse: (id: string) => void; onChanged: () => void}) {
+export default function HostsPage({current, onUse, onLeave, onChanged}: {
+  current: string; onUse: (id: string) => void; onLeave: () => void; onChanged: () => void
+}) {
   const {data, error, reload} = usePoll<{hosts: HostView[]; error?: string}>('/api/hosts', 5000)
   const [edit, setEdit] = useState<HostView | 'new' | null>(null)
   const [del, setDel] = useState<HostView | null>(null)
@@ -143,6 +145,12 @@ export default function HostsPage({current, onUse, onChanged}: {current: string;
   const connect = async (h: HostView) => {
     setBusy(h.id); setRowErr(r => ({...r, [h.id]: ''}))
     try { await connectHost(h.id) } catch (e) { setRowErr(r => ({...r, [h.id]: errText(e)})) }
+    setBusy(''); reload()
+  }
+  // 断开正在查看的主机：回到本机（停留在本页）。
+  const disconnect = async (h: HostView) => {
+    setBusy(h.id); setRowErr(r => ({...r, [h.id]: ''}))
+    try { await disconnectHost(h.id); if (current === h.id) onLeave() } catch (e) { setRowErr(r => ({...r, [h.id]: errText(e)})) }
     setBusy(''); reload()
   }
   const hosts = data?.hosts || []
@@ -175,7 +183,8 @@ export default function HostsPage({current, onUse, onChanged}: {current: string;
               <td className="fp">{h.fingerprint || <span className="form-err">未确认</span>}</td>
               <td className="right nowrap">
                 {current !== h.id && <button className="btn primary" onClick={() => onUse(h.id)}>查看</button>}{' '}
-                <button className="btn" disabled={busy === h.id} onClick={() => connect(h)}>{busy === h.id ? '连接中…' : h.connected ? '重连' : '连接'}</button>{' '}
+                <button className="btn" disabled={busy === h.id} onClick={() => connect(h)}>{busy === h.id ? '处理中…' : h.connected ? '重连' : '连接'}</button>{' '}
+                {h.connected && <><button className="btn" disabled={busy === h.id} onClick={() => disconnect(h)}>断开</button>{' '}</>}
                 <button className="btn" onClick={() => setEdit(h)}>编辑</button>{' '}
                 <button className="link danger" onClick={() => setDel(h)}>删除</button>
               </td>
@@ -188,6 +197,7 @@ export default function HostsPage({current, onUse, onChanged}: {current: string;
         <b>说明</b>
         <ul style={{margin: '6px 0 0', paddingLeft: 18}}>
           <li>远程主机上需要有 <code>ip</code>、<code>ss</code>、<code>ps</code>（iproute2、procps），读取防火墙需要 root：用 root 登录，或给登录用户配置 sudo。</li>
+          <li>程序启动时只看本机，不会自动连接远程主机；选中或点「查看」「连接」时才连接。点「断开」后不会自动重连。</li>
           <li>修改远程防火墙前会检查当前 SSH 连接是否会被切断；有风险时要求再次确认。</li>
           <li>远程主机暂不统计 UDP 流量（需要 bpftrace 探针），也不读取桌面环境的代理设置。</li>
         </ul>

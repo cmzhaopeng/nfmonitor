@@ -139,6 +139,7 @@ export const probeHost = (addr: string, port: number) => postJSON<HostKeyProbe>(
 export const testHost = (cfg: Partial<HostConfig>, secrets: Secrets) => postJSON<HostInfo>('/api/hosts/test', {...cfg, secrets})
 export const saveHost = (cfg: Partial<HostConfig>, secrets: Secrets) => postJSON<HostView>('/api/hosts/save', {...cfg, secrets})
 export const connectHost = (id: string) => postJSON<HostView>('/api/hosts/connect', {id})
+export const disconnectHost = (id: string) => postJSON<HostView>('/api/hosts/disconnect', {id})
 export const deleteHost = (id: string) => postJSON<{ok: boolean}>('/api/hosts/delete', {id})
 
 export interface Polled<T> { data: T | null; error: string; loading: boolean; reload: () => void }

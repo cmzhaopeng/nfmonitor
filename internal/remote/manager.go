@@ -12,7 +12,7 @@ type Manager struct {
 	store *Store
 	mu    sync.Mutex
 	hosts map[string]*Host
-	// OnRemove 在主机被删除或配置被修改时调用（API 层借此清理该主机的采样状态）。
+	// OnRemove 在主机被删除、配置被修改或被手动断开时调用（API 层借此清理该主机的采样状态）。
 	OnRemove func(id string)
 }
 
@@ -114,12 +114,28 @@ func (m *Manager) Connect(id string) (HostView, error) {
 	if err != nil {
 		return HostView{}, err
 	}
-	h.mu.Lock()
-	h.lastErr = nil // 用户主动重连：不等重试间隔
-	h.mu.Unlock()
-	_, cerr := h.Connect()
+	_, cerr := h.Reconnect()
 	cfg, _ := m.store.Get(id)
 	return view(cfg, h), cerr
+}
+
+// Disconnect 断开一台主机（界面上的「断开」按钮）；之后不会自动重连，直到再调用 Connect。
+func (m *Manager) Disconnect(id string) (HostView, error) {
+	cfg, ok := m.store.Get(id)
+	if !ok {
+		return HostView{}, errors.New("主机不存在（可能已被删除）")
+	}
+	m.mu.Lock()
+	h := m.hosts[id]
+	m.mu.Unlock()
+	if h == nil {
+		return view(cfg, nil), nil
+	}
+	h.Disconnect()
+	if m.OnRemove != nil {
+		m.OnRemove(id) // 停掉该主机的采样
+	}
+	return view(cfg, h), nil
 }
 
 func (m *Manager) Delete(id string) error {

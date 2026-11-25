@@ -20,6 +20,7 @@ type hostForm struct {
 //	POST /api/hosts/test     {主机配置, secrets} → 试连并探测 root 权限，不保存
 //	POST /api/hosts/save     {主机配置, secrets} → 保存（id 为空 = 新增）
 //	POST /api/hosts/connect  {id} → 立即（重新）连接
+//	POST /api/hosts/disconnect {id} → 断开，之后不自动重连
 //	POST /api/hosts/delete   {id}
 func (s *Server) hostRoutes(mux *http.ServeMux, post func(string, func(*http.Request, *json.Decoder) (any, error))) {
 	mux.HandleFunc("GET /api/hosts", func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +75,15 @@ func (s *Server) hostRoutes(mux *http.ServeMux, post func(string, func(*http.Req
 			return nil, err
 		}
 		return s.Hosts.Connect(req.ID)
+	})
+	withHosts("/api/hosts/disconnect", func(dec *json.Decoder) (any, error) {
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := dec.Decode(&req); err != nil {
+			return nil, err
+		}
+		return s.Hosts.Disconnect(req.ID)
 	})
 	withHosts("/api/hosts/delete", func(dec *json.Decoder) (any, error) {
 		var req struct {
