@@ -273,3 +273,37 @@ func TestRemoteCollectors(t *testing.T) {
 	}
 	t.Logf("firewall tools %v, %d tables, errors %v", fw.Tools, len(fw.Tables), fw.Errors)
 }
+
+func TestDisconnect(t *testing.T) {
+	s := startServer(t, "pw")
+	m := NewManager(mustStore(t))
+	defer m.Close()
+	v, err := m.Save(s.config("pw"), Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Connect(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	removed := ""
+	m.OnRemove = func(id string) { removed = id }
+	dv, err := m.Disconnect(v.ID)
+	if err != nil || dv.Connected || dv.Error != "" || removed != v.ID {
+		t.Fatalf("disconnect: %+v %v removed=%q", dv, err, removed)
+	}
+	// 手动断开后，采集请求不会自动重连。
+	h, _ := m.Get(v.ID)
+	if _, err := h.Run(5*time.Second, "true"); !errors.Is(err, ErrDisconnected) {
+		t.Errorf("run after disconnect: %v", err)
+	}
+	if c, _, _ := h.Status(); c {
+		t.Error("should stay disconnected")
+	}
+	// 再点「连接」恢复。
+	if cv, err := m.Connect(v.ID); err != nil || !cv.Connected {
+		t.Fatalf("reconnect: %+v %v", cv, err)
+	}
+	if _, err := h.Run(5*time.Second, "true"); err != nil {
+		t.Errorf("run after reconnect: %v", err)
+	}
+}
