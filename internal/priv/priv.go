@@ -23,7 +23,8 @@ import (
 )
 
 type request struct {
-	Cmd string `json:"cmd"`
+	Cmd string         `json:"cmd,omitempty"`
+	Ufw *netinfo.UfwOp `json:"ufw,omitempty"` // 一次 ufw 修改：root 侧经 ApplyUfw 重新校验后执行
 }
 
 type response struct {
@@ -45,6 +46,13 @@ func ServeHelper(in io.Reader, out io.Writer) error {
 		var resp response
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
 			resp.Err = "bad request"
+		} else if req.Ufw != nil {
+			res, err := netinfo.ApplyUfw(*req.Ufw)
+			b, _ := json.Marshal(res)
+			resp.Out = string(b)
+			if err != nil {
+				resp.Err = err.Error()
+			}
 		} else if o, err := netinfo.RunPrivCommand(req.Cmd); err != nil {
 			resp.Out, resp.Err = o, err.Error()
 		} else {
@@ -205,6 +213,10 @@ func (c *Client) ApplyUfw(op netinfo.UfwOp) (netinfo.UfwResult, error) {
 	if os.Geteuid() == 0 {
 		return netinfo.ApplyUfw(op)
 	}
+	// 已授权：交给常驻的 root helper，不再弹授权框。
+	if res, err, ok := c.applyViaHelper(op); ok {
+		return res, err
+	}
 	pkexec := netinfo.ToolPath("pkexec")
 	if pkexec == "" {
 		return netinfo.UfwResult{}, errors.New("未找到 pkexec（请安装 polkit，或用 sudo 运行本程序）")
@@ -246,6 +258,39 @@ func (c *Client) ApplyUfw(op netinfo.UfwOp) (netinfo.UfwResult, error) {
 		return r.Result, errors.New(r.Error)
 	}
 	return r.Result, nil
+}
+
+// applyViaHelper 经已授权的 helper 执行；ok=false 表示 helper 没在运行。
+func (c *Client) applyViaHelper(op netinfo.UfwOp) (res netinfo.UfwResult, err error, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd == nil {
+		return res, nil, false
+	}
+	b, _ := json.Marshal(request{Ufw: &op})
+	if _, err := c.stdin.Write(append(b, '\n')); err != nil {
+		c.closeLocked()
+		return res, nil, false
+	}
+	line, err := c.rd.ReadBytes('\n')
+	if err != nil {
+		c.closeLocked()
+		return res, ErrNotElevated, true
+	}
+	var r response
+	if err := json.Unmarshal(line, &r); err != nil {
+		return res, err, true
+	}
+	if jerr := json.Unmarshal([]byte(r.Out), &res); jerr != nil && r.Err == "" {
+		return res, errors.New("助手返回了无法识别的结果（程序升级后请重启 nfmonitor）"), true
+	}
+	if r.Err != "" {
+		if strings.HasPrefix(r.Err, "不允许的命令") {
+			r.Err = "正在运行的 root 助手是旧版本，请重启 nfmonitor 后重试"
+		}
+		return res, errors.New(r.Err), true
+	}
+	return res, nil, true
 }
 
 // ApplyReply 是 ufw-apply 子命令写到 stdout 的结果。

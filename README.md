@@ -62,11 +62,11 @@ nfmonitor version
 - 白名单里全部是只读命令：`nft -a list ruleset`、`iptables-save`、`ufw status`、读取 `/etc/ufw/user*.rules`、`ss`，以及一个脚本固定的 `bpftrace` 探针；
 - 随界面退出而退出。
 
-修改 ufw 不经过这个只读子进程。每次修改单独用 `pkexec nfmonitor ufw-apply` 起一个一次性的 root 进程（独立的 polkit 动作 `org.nfmonitor.ufw`），修改内容是结构化的 JSON（动作、方向、协议、地址、端口、网卡、备注），由 root 进程重新校验每个字段、对照当前规则确认要改的那条确实存在，再拼成 ufw 参数直接执行（不经过 shell）。只支持增、删、改、调整顺序（拖动或 ↑ ↓；ufw 没有移动命令，实际是删除后在新位置重新插入），启用 / 停用，默认策略和日志级别，不支持 `ufw reset`。
+在「ufw 策略」页确认的修改，也交给这个已授权的子进程执行，不再重复询问密码（与 gufw 授权一次即可管理的体验相同）；还没授权时，则单独用 `pkexec nfmonitor ufw-apply` 起一个一次性的 root 进程（polkit 动作 `org.nfmonitor.ufw`）。修改内容是结构化的 JSON（动作、方向、协议、地址、端口、网卡、备注），由 root 进程重新校验每个字段、对照当前规则确认要改的那条确实存在，再拼成 ufw 参数直接执行（不经过 shell）。只支持增、删、改、调整顺序（拖动或 ↑ ↓；ufw 没有移动命令，实际是删除后在新位置重新插入），启用 / 停用，默认策略和日志级别，不支持 `ufw reset`。
 
 UDP 流量统计靠 `bpftrace` 在 `udp_sendmsg` / `udpv6_sendmsg` / `skb_consume_udp` 上挂 kprobe，只读取内核数据；30 秒没有人查看时探针自动卸载。没有授权或没装 `bpftrace` 时，应用页只统计 TCP。
 
-网页模式只监听回环地址，并校验请求的 Host；修改类接口还要求自定义请求头、JSON 请求体和同源的 Origin，挡住其他网页的跨站请求。
+网页模式只监听回环地址，并校验请求的 Host；修改类接口（授权、ufw 修改）还要求自定义请求头、JSON 请求体和同源的 Origin，挡住其他网页的跨站请求，并通过 `/proc/net/tcp` 确认连接来自运行本程序的同一用户，本机其他用户无法借它改防火墙。
 
 ## 开发
 
