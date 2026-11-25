@@ -1,5 +1,5 @@
 import {useEffect, useMemo, useState} from 'react'
-import {Link, UfwInfo, UfwOp, UfwResult, UfwRule, ufwApply, ufwPreview, usePoll} from '../api'
+import {isRemote, Link, LockoutError, UfwInfo, UfwOp, UfwResult, UfwRule, ufwApply, ufwPreview, usePoll} from '../api'
 
 // ufw 策略管理：像硬件防火墙的 Web 界面一样按表格增删改规则、设置默认策略。
 // 每次修改先预览将要执行的 ufw 命令，确认后由后端经 pkexec 以 root 执行。
@@ -53,27 +53,44 @@ function ActionBadge({r}: {r: Pick<UfwRule, 'action'>}) {
 function useOpPreview(op: UfwOp | null) {
   const [cmds, setCmds] = useState<string[][]>([])
   const [err, setErr] = useState('')
+  const [warning, setWarning] = useState('')
   const key = JSON.stringify(op)
   useEffect(() => {
     if (!op) return
     let live = true
     const t = setTimeout(() => {
-      ufwPreview(op).then(r => { if (live) { setCmds(r.commands); setErr('') } })
-        .catch(e => { if (live) { setCmds([]); setErr(String(e.message || e)) } })
+      ufwPreview(op).then(r => { if (live) { setCmds(r.commands); setErr(''); setWarning(r.warning || '') } })
+        .catch(e => { if (live) { setCmds([]); setErr(String(e.message || e)); setWarning('') } })
     }, 200)
     return () => { live = false; clearTimeout(t) }
   }, [key])
-  return {cmds, err}
+  return {cmds, err, warning}
 }
 
-function Commands({cmds, err}: {cmds: string[][]; err: string}) {
+/** 远程主机上这次修改可能切断 SSH 连接：显示警告，要求勾选确认。 */
+export function LockoutWarning({warning, ack, setAck}: {warning: string; ack: boolean; setAck: (v: boolean) => void}) {
+  if (!warning) return null
+  return (
+    <div className="banner err" style={{marginTop: 10}}>
+      <div>
+        <b>可能断开与这台主机的连接</b>
+        <div className="dim" style={{overflowWrap: 'anywhere'}}>{warning}</div>
+        <label className="check" style={{marginTop: 6}}><input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)}/>我知道风险（例如有控制台或其他途径可以恢复），仍要执行</label>
+      </div>
+    </div>
+  )
+}
+
+const busyText = () => isRemote() ? '执行中…' : '等待系统授权…'
+
+export function Commands({cmds, err}: {cmds: string[][]; err: string}) {
   if (err === '规则没有变化') return <div className="muted">还没有修改</div>
   if (err) return <div className="form-err">{err}</div>
   if (!cmds.length) return <div className="muted">…</div>
   return <pre className="raw cmd">{cmds.map(c => '$ sudo ' + c.map(a => /[\s'"]/.test(a) || a === '' ? `'${a.replace(/'/g, `'\\''`)}'` : a).join(' ')).join('\n')}</pre>
 }
 
-function Modal({title, onClose, children, foot, wide}: {title: string; onClose: () => void; children: React.ReactNode; foot: React.ReactNode; wide?: boolean}) {
+export function Modal({title, onClose, children, foot, wide}: {title: string; onClose: () => void; children: React.ReactNode; foot: React.ReactNode; wide?: boolean}) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', k)
@@ -93,12 +110,15 @@ function Modal({title, onClose, children, foot, wide}: {title: string; onClose: 
 function useApply(onDone: (r: UfwResult) => void) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [ack, setAck] = useState(false)
   const run = async (op: UfwOp) => {
     setBusy(true); setErr('')
-    try { onDone(await ufwApply(op)) } catch (e: any) { setErr(String(e.message || e)) }
+    try { onDone(await ufwApply({...op, confirm: ack || undefined})) } catch (e: any) {
+      setErr(e instanceof LockoutError ? '执行前的检查发现这次修改可能切断 SSH 连接，已取消：' + e.message : String(e.message || e))
+    }
     setBusy(false)
   }
-  return {busy, err, run}
+  return {busy, err, run, ack, setAck}
 }
 
 /** 删除、启停、默认策略这类「确认一下就执行」的修改。 */
@@ -113,12 +133,13 @@ function ConfirmOp({title, op, children, danger, okText, onClose, onDone}: {
       {ap.err && <div className="form-err" style={{flex: 1}}>{ap.err}</div>}
       <span className="sp"/>
       <button className="btn" onClick={onClose}>取消</button>
-      <button className={'btn ' + (danger ? 'danger' : 'primary')} disabled={ap.busy || !!pv.err || !pv.cmds.length} onClick={() => ap.run(op)}>
-        {ap.busy ? '等待系统授权…' : okText}</button>
+      <button className={'btn ' + (danger || pv.warning ? 'danger' : 'primary')} disabled={ap.busy || !!pv.err || !pv.cmds.length || (!!pv.warning && !ap.ack)} onClick={() => ap.run(op)}>
+        {ap.busy ? busyText() : okText}</button>
     </>}>
       {children}
       <div className="field-label" style={{marginTop: 10}}>将执行</div>
       <Commands {...pv}/>
+      <LockoutWarning warning={pv.warning} ack={ap.ack} setAck={ap.setAck}/>
     </Modal>
   )
 }
@@ -161,7 +182,7 @@ function RuleEditor({old, groups, ifaces, onClose, onDone}: {
       {ap.err && <div className="form-err" style={{flex: 1}}>{ap.err}</div>}
       <span className="sp"/>
       <button className="btn" onClick={onClose}>取消</button>
-      <button className="btn primary" disabled={ap.busy || !!pv.err || !pv.cmds.length} onClick={() => ap.run(op)}>{ap.busy ? '等待系统授权…' : '应用'}</button>
+      <button className={'btn ' + (pv.warning ? 'danger' : 'primary')} disabled={ap.busy || !!pv.err || !pv.cmds.length || (!!pv.warning && !ap.ack)} onClick={() => ap.run(op)}>{ap.busy ? busyText() : '应用'}</button>
     </>}>
       <datalist id="ufw-ifaces">{ifaces.map(i => <option key={i} value={i}/>)}</datalist>
       <div className="form">
@@ -210,6 +231,7 @@ function RuleEditor({old, groups, ifaces, onClose, onDone}: {
       </div>
       <div className="field-label" style={{marginTop: 10}}>将执行</div>
       <Commands {...pv}/>
+      <LockoutWarning warning={pv.warning} ack={ap.ack} setAck={ap.setAck}/>
     </Modal>
   )
 }
@@ -250,7 +272,12 @@ export default function UfwPanel({ufw, onChanged}: {ufw: UfwInfo; onChanged: () 
   /** 把 g 放到 target 之前（target 为 undefined = 末尾）。 */
   const moveBefore = async (g: Group, target?: Group) => {
     setMoving(g.key); setMoveErr('')
-    try { setDone(await ufwApply({op: 'move', old: g.r, before: target?.r})); onChanged() } catch (e: any) { setMoveErr(String(e.message || e)) }
+    const op: UfwOp = {op: 'move', old: g.r, before: target?.r}
+    try { setDone(await ufwApply(op)); onChanged() } catch (e: any) {
+      if (e instanceof LockoutError && window.confirm(e.message + '\n\n仍要执行？')) {
+        try { setDone(await ufwApply({...op, confirm: true})); onChanged() } catch (e2: any) { setMoveErr(String(e2.message || e2)) }
+      } else setMoveErr(String(e.message || e))
+    }
     setMoving('')
   }
   /** 把 g 放到 target 之后：即 target 在全部规则里的下一组之前。 */

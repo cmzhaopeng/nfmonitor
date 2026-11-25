@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Socket struct {
@@ -31,9 +32,12 @@ var (
 	ssRecvd = regexp.MustCompile(`\bbytes_received:(\d+)`)
 )
 
-// Sockets 列出 TCP/UDP 套接字。非 root 时看不到其他用户进程的归属。
-func Sockets() ([]Socket, error) {
-	out, err := run("ss", SsArgs...)
+// Sockets 列出本机 TCP/UDP 套接字。非 root 时看不到其他用户进程的归属。
+func Sockets() ([]Socket, error) { return SocketsOn(Local) }
+
+// SocketsOn 以普通权限列出 sys 上的套接字。
+func SocketsOn(sys Sys) ([]Socket, error) {
+	out, err := orLocal(sys).Run(8*time.Second, "ss", SsArgs...)
 	if err != nil {
 		return nil, err
 	}

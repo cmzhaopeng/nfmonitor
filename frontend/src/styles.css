@@ -42,7 +42,7 @@ body {
   background: var(--page); color: var(--text);
   font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 code, .mono { font-family: var(--mono); font-size: 12px; }
 h1 { font-size: 18px; margin: 0; font-weight: 600; }
 h2 { font-size: 14px; margin: 0; font-weight: 600; }
@@ -98,7 +98,7 @@ h3 { font-size: 12px; margin: 0; font-weight: 600; color: var(--text-2); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 .btn:disabled { opacity: .6; cursor: default; }
-input[type=text], input[type=search], select {
+input[type=text], input[type=search], input[type=password], input[type=number], textarea, select {
   border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 4px 8px; min-width: 0;
 }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -288,3 +288,18 @@ pre.raw.cmd { padding: 8px 10px; max-height: 200px; white-space: pre-wrap; overf
 .ufw-tbl tr.busy td { opacity: .6; }
 .ufw-tbl tr.drop-above td { box-shadow: inset 0 2px 0 var(--accent); }
 .ufw-tbl tr.drop-below td { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* 主机切换与主机管理 */
+.host-pick { width: 100%; margin: 6px 0 2px; }
+.host-list td { vertical-align: middle; }
+.fp { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.form textarea { font-family: var(--mono); font-size: 12px; min-height: 90px; resize: vertical; }
+.check { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }
+.check input { margin-top: 2px; }
+
+/* firewalld */
+.zone-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.zone-item { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 4px 1px 7px; font-family: var(--mono); font-size: 12px; max-width: 100%; overflow-wrap: anywhere; }
+.zone-item button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 12px; }
+.zone-item button:hover { color: var(--crit); }
+.zone-grid { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 12px; align-items: baseline; }

@@ -1,6 +1,7 @@
 package netinfo
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -21,6 +22,11 @@ var PrivCommands = map[string][]string{
 	// 读 /etc/ufw/user.rules、user6.rules 里 ufw 自己写的 tuple 行（路径固定，见 ufw.go）。
 	"ufw-tuples": {"ufw"},
 	"ss":         append([]string{"ss"}, SsArgs...),
+	// firewalld 的只读查询（修改走结构化的 FirewalldOp，见 firewalld.go）。
+	"firewalld-state":    {"firewall-cmd", "--state"},
+	"firewalld-default":  {"firewall-cmd", "--get-default-zone"},
+	"firewalld-zones":    {"firewall-cmd", "--list-all-zones"},
+	"firewalld-services": {"firewall-cmd", "--get-services"},
 	// 常驻的 bpftrace 探针（脚本固定，见 udp.go）；每次调用取走上次以来的 UDP 流量增量。
 	"udpstat": {"bpftrace", "-q", "-e", udpScript},
 }
@@ -38,6 +44,22 @@ func RunPrivCommand(name string) (string, error) {
 		return readUfwTuples()
 	}
 	return Run(15*time.Second, argv[0], argv[1:]...)
+}
+
+// RunPrivCommandOn 在远程主机上以 root（root 登录或 sudo）执行白名单命令。
+// UDP 探针只在本机提供。
+func RunPrivCommandOn(r RootSys, name string) (string, error) {
+	argv, ok := PrivCommands[name]
+	if !ok {
+		return "", fmt.Errorf("不允许的命令: %s", name)
+	}
+	switch name {
+	case "udpstat":
+		return "", errors.New("远程主机不统计 UDP 流量")
+	case "ufw-tuples":
+		return readUfwTuplesWith(r.ReadFileRoot)
+	}
+	return r.RunRoot(15*time.Second, argv[0], argv[1:]...)
 }
 
 type FwRule struct {
@@ -86,23 +108,34 @@ type Firewall struct {
 	Errors     map[string]string `json:"errors"`    // 各命令的失败原因
 	UfwStatus  string            `json:"ufwStatus"` // active | inactive | ""(未安装/未知)
 	Ufw        *UfwInfo          `json:"ufw"`       // 未安装 ufw 时为 null
+	Firewalld  *FirewalldInfo    `json:"firewalld"` // 未安装 firewalld 时为 null
 	Tools      map[string]string `json:"tools"`     // 已安装的工具及版本
 }
 
-// CollectFirewall 用 runPriv 执行需要 root 的命令并解析。
+// CollectFirewall 采集本机：用 runPriv 执行需要 root 的命令并解析。
 func CollectFirewall(runPriv func(string) (string, error)) Firewall {
+	return CollectFirewallOn(Local, runPriv)
+}
+
+// CollectFirewallOn 采集 sys 上的防火墙；runPriv 以 root 执行 PrivCommands 里的命令。
+func CollectFirewallOn(sys Sys, runPriv func(string) (string, error)) Firewall {
+	sys = orLocal(sys)
 	fw := Firewall{Tables: []FwTable{}, Raw: map[string]string{}, Errors: map[string]string{}, Tools: map[string]string{}}
-	if v, err := run("iptables", "--version"); err == nil {
+	if v, err := sys.Run(8*time.Second, "iptables", "--version"); err == nil {
 		fw.Tools["iptables"] = strings.TrimSpace(v)
 	}
-	if v, err := run("nft", "--version"); err == nil {
+	if v, err := sys.Run(8*time.Second, "nft", "--version"); err == nil {
 		fw.Tools["nft"] = strings.TrimSpace(v)
 	}
-	if ToolPath("ufw") != "" {
+	hasUfw := sys.HasTool("ufw")
+	if hasUfw {
 		fw.Tools["ufw"] = "installed"
 	}
+	if sys.HasTool("firewall-cmd") {
+		fw.Tools["firewalld"] = "installed"
+	}
 	get := func(name string) (string, bool) {
-		if ToolPath(PrivCommands[name][0]) == "" {
+		if !sys.HasTool(PrivCommands[name][0]) {
 			return "", false
 		}
 		out, err := runPriv(name)
@@ -136,10 +169,10 @@ func CollectFirewall(runPriv func(string) (string, error)) Firewall {
 			get("ufw-numbered") // 未启用时 numbered 只有一行状态，没必要取
 		}
 	}
-	if ToolPath("ufw") != "" {
+	if hasUfw {
 		u := &UfwInfo{Status: fw.UfwStatus, Rules: []UfwRule{}}
 		var enabled string
-		u.Defaults, u.Logging, u.IPv6, enabled = ReadUfwConfig()
+		u.Defaults, u.Logging, u.IPv6, enabled = ReadUfwConfigOn(sys)
 		if u.Status == "" {
 			u.Status = enabled // 没授权时按 ufw.conf 的 ENABLED 推断
 		}
@@ -149,6 +182,13 @@ func CollectFirewall(runPriv func(string) (string, error)) Firewall {
 			u.Rules = ParseUfwTuples(out, u.IPv6)
 		}
 		fw.Ufw = u
+	}
+	if fw.Tools["firewalld"] != "" {
+		fd := CollectFirewalld(sys, runPriv)
+		fw.Firewalld = &fd
+		for k, v := range fd.Raw {
+			fw.Raw[k] = v
+		}
 	}
 	return fw
 }

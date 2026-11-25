@@ -1,5 +1,5 @@
 import {Fragment, useEffect, useMemo, useRef, useState} from 'react'
-import {App, AppIface, AppsSnapshot, elevate, Socket, usePoll} from '../api'
+import {App, AppIface, AppsSnapshot, elevate, isRemote, Socket, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtRate} from '../format'
 import {Spark} from '../RateChart'
@@ -133,7 +133,7 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
         </div>
       )}
       {data?.udpMode === 'error' && <div className="banner warn"><div><b>UDP 流量未计入</b><div className="dim" style={{overflowWrap: 'anywhere'}}>{data.udpError}</div></div></div>}
-      {unknown && <div className="banner warn">部分连接属于其他用户（如 root）的进程，普通权限下看不到归属，归在「未知」里。在「防火墙」页授权后会补全。</div>}
+      {unknown && <div className="banner warn">部分连接属于其他用户（如 root）的进程，普通权限下看不到归属，归在「未知」里。{isRemote() ? '远程登录用户能以 root / sudo 执行后会补全。' : '在「防火墙」页授权后会补全。'}</div>}
 
       {view === 'app' && <div className="card tbl-wrap">
         <table>
