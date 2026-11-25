@@ -267,9 +267,21 @@ func TestRemoteCollectors(t *testing.T) {
 		}
 	}
 	fw := netinfo.CollectFirewallOn(h, h.RunPriv)
-	// 以 root 登录：应拿到 root 数据；iptables / nft 已安装时工具版本应被识别
-	if !fw.Privileged {
-		t.Errorf("firewall not privileged: errors %v", fw.Errors)
+	// 测试服务器以当前用户执行命令：能拿到 root（以 root 运行测试或免密 sudo）时应读到 root 数据；
+	// 拿不到时不应假装有，且需要 root 的命令都应明确报 ErrNoRoot，而不是执行失败的其他错误。
+	if mode := h.RootMode(); mode != RootNone {
+		if !fw.Privileged {
+			t.Errorf("root mode %q but firewall not privileged: errors %v", mode, fw.Errors)
+		}
+	} else {
+		if fw.Privileged {
+			t.Error("no root, but firewall reported privileged")
+		}
+		for cmd, msg := range fw.Errors {
+			if msg != ErrNoRoot.Error() {
+				t.Errorf("%s without root: want ErrNoRoot, got %q", cmd, msg)
+			}
+		}
 	}
 	t.Logf("firewall tools %v, %d tables, errors %v", fw.Tools, len(fw.Tables), fw.Errors)
 }
