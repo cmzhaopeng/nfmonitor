@@ -40,7 +40,7 @@ export default function App() {
             <span className={'badge ' + (priv === 'none' ? 'warn' : 'good')}>
               {priv === 'none' ? '普通权限' : priv === 'root' ? 'root 运行' : '已授权读取'}
             </span>
-            <span>v{meta.data?.version || '…'} · 只读</span>
+            <span>v{meta.data?.version || '…'}</span>
           </div>
         </aside>
         <main className="main">

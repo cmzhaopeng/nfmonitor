@@ -7,6 +7,7 @@ package priv
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,6 +180,87 @@ func (c *Client) Run(name string) (string, error) {
 		return r.Out, errors.New(r.Err)
 	}
 	return r.Out, nil
+}
+
+// ApplyUfw 执行一次 ufw 修改。写操作不走只读 helper：每次单独用
+// `pkexec <self> ufw-apply` 起一个 root 进程，操作经 stdin 传入，由它重新校验后执行。
+// 样例模式下只返回将要执行的命令，不执行。
+func (c *Client) ApplyUfw(op netinfo.UfwOp) (netinfo.UfwResult, error) {
+	if fixtureDir != "" {
+		var cur []netinfo.UfwRule
+		if out, err := c.Run("ufw-tuples"); err == nil {
+			cur = netinfo.ParseUfwTuples(out, true)
+		}
+		cmds, err := netinfo.BuildUfw(op, cur, true)
+		if err != nil {
+			return netinfo.UfwResult{}, err
+		}
+		return netinfo.UfwResult{Commands: cmds, Output: "（样例模式：未执行）"}, nil
+	}
+	if os.Geteuid() == 0 {
+		return netinfo.ApplyUfw(op)
+	}
+	pkexec := netinfo.ToolPath("pkexec")
+	if pkexec == "" {
+		return netinfo.UfwResult{}, errors.New("未找到 pkexec（请安装 polkit，或用 sudo 运行本程序）")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return netinfo.UfwResult{}, err
+	}
+	in, _ := json.Marshal(op)
+	cmd := exec.Command(pkexec, self, "ufw-apply")
+	cmd.Stdin = bytes.NewReader(in)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return netinfo.UfwResult{}, err
+	}
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+	case <-time.After(3 * time.Minute):
+		cmd.Process.Kill()
+		<-done
+		return netinfo.UfwResult{}, errors.New("等待授权超时")
+	}
+	var r ApplyReply
+	if jerr := json.Unmarshal(stdout.Bytes(), &r); jerr != nil {
+		// pkexec 自己失败（取消授权返回 126、未授权 127）时没有 JSON 输出。
+		if ee, ok := err.(*exec.ExitError); ok && (ee.ExitCode() == 126 || ee.ExitCode() == 127) {
+			return netinfo.UfwResult{}, errors.New("授权被取消，未做任何修改")
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		return netinfo.UfwResult{}, fmt.Errorf("执行失败: %s", msg)
+	}
+	if r.Error != "" {
+		return r.Result, errors.New(r.Error)
+	}
+	return r.Result, nil
+}
+
+// ApplyReply 是 ufw-apply 子命令写到 stdout 的结果。
+type ApplyReply struct {
+	Result netinfo.UfwResult `json:"result"`
+	Error  string            `json:"error,omitempty"`
+}
+
+// ServeUfwApply 是 `nfmonitor ufw-apply` 的主体（root 侧）：从 stdin 读一个操作，执行，写回结果。
+func ServeUfwApply(in io.Reader, out io.Writer) error {
+	var op netinfo.UfwOp
+	var reply ApplyReply
+	if err := json.NewDecoder(io.LimitReader(in, 64<<10)).Decode(&op); err != nil {
+		reply.Error = "bad request"
+	} else if res, err := netinfo.ApplyUfw(op); err != nil {
+		reply.Result, reply.Error = res, err.Error()
+	} else {
+		reply.Result = res
+	}
+	return json.NewEncoder(out).Encode(reply)
 }
 
 // Close 结束 helper。

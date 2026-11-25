@@ -2,8 +2,9 @@ import {useMemo, useState} from 'react'
 import {elevate, Firewall, FwChain, FwTable, usePoll} from '../api'
 import {ErrorBanner} from '../App'
 import {fmtBytes, fmtCount} from '../format'
+import UfwPanel from './Ufw'
 
-type Tab = 'hooks' | 'tables' | 'raw'
+type Tab = 'hooks' | 'tables' | 'ufw' | 'raw'
 interface Ref { table: FwTable; chain: FwChain }
 const refKey = (r: Ref) => `${r.table.family}|${r.table.name}|${r.chain.name}`
 
@@ -161,12 +162,13 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
         <div className="tabs">
           <button className={tab === 'hooks' ? 'on' : ''} onClick={() => setTab('hooks')}>Hook 流程</button>
           <button className={tab === 'tables' ? 'on' : ''} onClick={() => setTab('tables')}>表与链</button>
+          {data.ufw && <button className={tab === 'ufw' ? 'on' : ''} onClick={() => setTab('ufw')}>ufw 策略</button>}
           <button className={tab === 'raw' ? 'on' : ''} onClick={() => setTab('raw')}>原始输出</button>
           <span style={{flex: 1}}/>
-          {tab !== 'raw' && <input type="search" placeholder="搜索规则：端口、地址、链名…" value={q} onChange={e => setQ(e.target.value)} style={{width: 240, marginBottom: 6}}/>}
+          {(tab === 'hooks' || tab === 'tables') && <input type="search" placeholder="搜索规则：端口、地址、链名…" value={q} onChange={e => setQ(e.target.value)} style={{width: 240, marginBottom: 6}}/>}
         </div>
 
-        {tab !== 'raw' && ql && (
+        {(tab === 'hooks' || tab === 'tables') && ql && (
           <div className="card" style={{marginBottom: 12}}>
             <div className="card-head"><h2>搜索结果</h2><span className="muted">{hits.length} 条规则匹配「{q.trim()}」</span></div>
             <div className="tbl-wrap" style={{maxHeight: 280}}><table><tbody>
@@ -224,6 +226,8 @@ export default function FirewallPage({onPrivChange}: {onPrivChange: () => void})
           </div>
           <div>{sel ? <ChainDetail r={sel} all={all} onJump={select}/> : <div className="card empty">从左侧选择一条链</div>}</div>
         </div>}
+
+        {tab === 'ufw' && data.ufw && <UfwPanel ufw={data.ufw} onChanged={reload}/>}
 
         {tab === 'raw' && <div className="card">
           <div className="card-head">
