@@ -67,17 +67,45 @@ export interface UfwOp {
   op: 'add' | 'delete' | 'replace' | 'move' | 'enable' | 'disable' | 'default' | 'logging'
   rule?: Partial<UfwRule>; position?: number; old?: UfwRule; before?: UfwRule; direction?: string; policy?: string; level?: string
 }
-export interface UfwResult { commands: string[][]; output: string; executed: boolean }
+/** 修改结果；warning 非空表示这次修改可能切断远程主机的 SSH 连接，执行时要带 confirm。 */
+export interface UfwResult { commands: string[][]; output: string; executed: boolean; warning?: string }
+export interface FirewalldZone {
+  name: string; default: boolean; active: boolean; target: string
+  interfaces: string[]; sources: string[]; services: string[]; ports: string[]; protocols: string[]
+  masquerade: boolean; forwardPorts: string[]; sourcePorts: string[]; icmpBlocks: string[]; richRules: string[]
+}
+export interface FirewalldInfo { state: string; defaultZone: string; zones: FirewalldZone[]; services: string[]; error?: string }
+export type FirewalldKind = 'service' | 'port' | 'source' | 'interface' | 'rich-rule' | 'masquerade'
+export interface FirewalldOp { op: 'add' | 'remove' | 'default-zone'; zone: string; kind?: FirewalldKind; value?: string; confirm?: boolean }
 export interface Firewall {
   privileged: boolean; tables: FwTable[]; raw: Record<string, string>; errors: Record<string, string>
-  ufwStatus: string; ufw: UfwInfo | null; tools: Record<string, string>
+  ufwStatus: string; ufw: UfwInfo | null; firewalld: FirewalldInfo | null; tools: Record<string, string>
 }
-export interface Meta { version: string; hostname: string; priv: 'root' | 'helper' | 'none' }
+export interface Meta {
+  version: string; hostname: string; priv: 'root' | 'helper' | 'sudo' | 'none'
+  remote: boolean; host?: string; name?: string; kernel?: string; rootErr?: string; error?: string
+}
+
+// ---- 当前查看的主机 ----
+// 所有采集 / 修改接口都带上 ?host=<id>；空串 = 本机。界面切换主机时整棵组件树按 key 重建。
+let currentHost = ''
+export const setApiHost = (id: string) => { currentHost = id }
+export const isRemote = () => currentHost !== ''
+function withHost(url: string) {
+  if (!currentHost || !url.startsWith('/api/') || url.startsWith('/api/hosts')) return url
+  return url + (url.includes('?') ? '&' : '?') + 'host=' + encodeURIComponent(currentHost)
+}
+
+/** 接口返回 409 + lockout：这次修改可能切断远程主机的 SSH 连接，需要用户确认后带 confirm 重发。 */
+export class LockoutError extends Error { lockout = true }
 
 export async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
+  const res = await fetch(withHost(url), init)
   const body = await res.json().catch(() => null)
-  if (!res.ok) throw new Error(body?.error || `${url}: HTTP ${res.status}`)
+  if (!res.ok) {
+    const msg = body?.error || `${url}: HTTP ${res.status}`
+    throw body?.lockout ? new LockoutError(msg) : new Error(msg)
+  }
   return body as T
 }
 
@@ -88,8 +116,30 @@ const postJSON = <T,>(url: string, body: unknown) =>
   getJSON<T>(url, {method: 'POST', headers: {'X-Nfmonitor': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)})
 /** 只生成将要执行的 ufw 命令，不执行。 */
 export const ufwPreview = (op: UfwOp) => postJSON<UfwResult>('/api/ufw/preview', op)
-/** 真正执行（会弹系统授权框）。 */
-export const ufwApply = (op: UfwOp) => postJSON<UfwResult>('/api/ufw/apply', op)
+/** 真正执行（本机会弹系统授权框；远程主机经 SSH 以 root / sudo 执行）。 */
+export const ufwApply = (op: UfwOp & {confirm?: boolean}) => postJSON<UfwResult>('/api/ufw/apply', op)
+export const firewalldPreview = (op: FirewalldOp) => postJSON<UfwResult>('/api/firewalld/preview', op)
+export const firewalldApply = (op: FirewalldOp) => postJSON<UfwResult>('/api/firewalld/apply', op)
+
+// ---- 远程主机 ----
+export type AuthKind = 'password' | 'key' | 'agent'
+export interface HostConfig {
+  id: string; name: string; addr: string; port: number; user: string; auth: AuthKind; keyPath?: string; hostKey?: string
+}
+export interface HostInfo { hostname: string; kernel: string; root: 'root' | 'sudo' | 'sudo-pw' | 'none'; rootErr?: string }
+export interface HostView extends HostConfig {
+  fingerprint: string; hasPassword: boolean; hasKeyPem: boolean; hasPassphrase: boolean; hasSudoPassword: boolean
+  connected: boolean; error?: string; info: HostInfo
+}
+/** 机密：空串 = 不修改；clear 里列出的字段 = 清除。 */
+export interface Secrets { password?: string; keyPem?: string; passphrase?: string; sudoPassword?: string; clear?: string[] }
+export interface HostKeyProbe { hostKey: string; type: string; fingerprint: string; knownHosts: 'match' | 'mismatch' | 'unknown' }
+export const listHosts = () => getJSON<{hosts: HostView[]; error?: string}>('/api/hosts')
+export const probeHost = (addr: string, port: number) => postJSON<HostKeyProbe>('/api/hosts/probe', {addr, port})
+export const testHost = (cfg: Partial<HostConfig>, secrets: Secrets) => postJSON<HostInfo>('/api/hosts/test', {...cfg, secrets})
+export const saveHost = (cfg: Partial<HostConfig>, secrets: Secrets) => postJSON<HostView>('/api/hosts/save', {...cfg, secrets})
+export const connectHost = (id: string) => postJSON<HostView>('/api/hosts/connect', {id})
+export const deleteHost = (id: string) => postJSON<{ok: boolean}>('/api/hosts/delete', {id})
 
 export interface Polled<T> { data: T | null; error: string; loading: boolean; reload: () => void }
 

@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Route struct {
@@ -58,16 +58,23 @@ type ipRouteJSON struct {
 	Flags    []string `json:"flags"`
 }
 
+var reHostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$`)
+
 var (
 	ruleLine   = regexp.MustCompile(`^(\d+):\s+(.*)$`)
 	ruleLookup = regexp.MustCompile(`\blookup (\S+)`)
 	ruleGoto   = regexp.MustCompile(`\bgoto (\d+)`)
 )
 
-// RoutingInfo 返回策略路由规则和所有路由表。
-func RoutingInfo() (Routing, error) {
+// RoutingInfo 返回本机的策略路由规则和所有路由表。
+func RoutingInfo() (Routing, error) { return RoutingOn(Local) }
+
+// RoutingOn 返回 sys 上的策略路由规则和所有路由表。
+func RoutingOn(sys Sys) (Routing, error) {
+	sys = orLocal(sys)
+	run := func(name string, args ...string) (string, error) { return sys.Run(8*time.Second, name, args...) }
 	r := Routing{Rules: []Rule{}, Tables: []Table{}}
-	names := tableNames()
+	names := tableNames(sys)
 	byID := map[string]*Table{}
 	var order []string
 	var firstErr error
@@ -161,10 +168,10 @@ func parseRules(out, fam string) []Rule {
 	return rules
 }
 
-func tableNames() map[string]string {
+func tableNames(sys Sys) map[string]string {
 	names := map[string]string{}
 	for _, p := range []string{"/usr/share/iproute2/rt_tables", "/etc/iproute2/rt_tables"} {
-		b, err := os.ReadFile(p)
+		b, err := sys.ReadFile(p)
 		if err != nil {
 			continue
 		}
@@ -199,11 +206,29 @@ type RouteGetResult struct {
 	Raw     string `json:"raw"`
 }
 
-func RouteGet(dst string) (RouteGetResult, error) {
+func RouteGet(dst string) (RouteGetResult, error) { return RouteGetOn(Local, dst) }
+
+// RouteGetOn 在 sys 上执行 ip route get。远程主机上的域名用它自己的 DNS（getent）解析。
+func RouteGetOn(sys Sys, dst string) (RouteGetResult, error) {
+	sys = orLocal(sys)
+	run := func(name string, args ...string) (string, error) { return sys.Run(8*time.Second, name, args...) }
 	var res RouteGetResult
-	ip := net.ParseIP(strings.TrimSpace(dst))
-	if ip == nil {
-		addrs, err := net.LookupIP(strings.TrimSpace(dst))
+	dst = strings.TrimSpace(dst)
+	ip := net.ParseIP(dst)
+	if ip == nil && sys.Remote() {
+		if !reHostname.MatchString(dst) {
+			return res, fmt.Errorf("无法解析 %q", dst)
+		}
+		if out, err := run("getent", "ahosts", dst); err == nil {
+			if fs := strings.Fields(out); len(fs) > 0 {
+				ip = net.ParseIP(fs[0])
+			}
+		}
+		if ip == nil {
+			return res, fmt.Errorf("无法解析 %q", dst)
+		}
+	} else if ip == nil {
+		addrs, err := net.LookupIP(dst)
 		if err != nil || len(addrs) == 0 {
 			return res, fmt.Errorf("无法解析 %q", dst)
 		}

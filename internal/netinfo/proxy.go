@@ -3,11 +3,9 @@ package netinfo
 import (
 	"net/url"
 	"os"
-	"os/user"
-	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // ProxySetting 是一条代理配置（环境变量、GNOME 设置、/etc/environment）。
@@ -63,25 +61,35 @@ var knownProcs = map[string]string{
 	"openconnect": "vpn", "charon": "vpn", "nebula": "vpn", "netbird": "vpn", "warp-svc": "vpn", "pppd": "vpn",
 }
 
-// CollectProxy 汇总代理配置、代理进程和隧道设备。
+// CollectProxy 汇总本机的代理配置、代理进程和隧道设备。
 func CollectProxy(links []Link, routing Routing, socks []Socket) ProxyInfo {
+	return CollectProxyOn(Local, links, routing, socks)
+}
+
+// CollectProxyOn 汇总 sys 上的代理配置、代理进程和隧道设备。远程主机没有「本程序的环境变量」
+// 和桌面会话，只看 /etc/environment、进程和隧道。
+func CollectProxyOn(sys Sys, links []Link, routing Routing, socks []Socket) ProxyInfo {
+	sys = orLocal(sys)
 	info := ProxyInfo{Settings: []ProxySetting{}, Processes: []ProxyProcess{}, Tunnels: []Tunnel{}}
+	remote := sys.Remote()
 
 	seen := map[string]bool{}
 	for _, k := range []string{"http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
 		v := os.Getenv(k)
 		lk := strings.ToLower(k)
-		if v == "" || seen[lk+v] {
+		if remote || v == "" || seen[lk+v] {
 			continue
 		}
 		seen[lk+v] = true
 		info.Settings = append(info.Settings, newSetting("env", lk, v))
 	}
-	info.NoProxy = os.Getenv("no_proxy")
-	if info.NoProxy == "" {
-		info.NoProxy = os.Getenv("NO_PROXY")
+	if !remote {
+		info.NoProxy = os.Getenv("no_proxy")
+		if info.NoProxy == "" {
+			info.NoProxy = os.Getenv("NO_PROXY")
+		}
 	}
-	if b, err := os.ReadFile("/etc/environment"); err == nil {
+	if b, err := sys.ReadFile("/etc/environment"); err == nil {
 		for _, ln := range strings.Split(string(b), "\n") {
 			k, v, ok := strings.Cut(strings.TrimSpace(ln), "=")
 			if ok && strings.HasSuffix(strings.ToLower(k), "_proxy") && !strings.EqualFold(k, "no_proxy") {
@@ -89,7 +97,9 @@ func CollectProxy(links []Link, routing Routing, socks []Socket) ProxyInfo {
 			}
 		}
 	}
-	if mode, err := run("gsettings", "get", "org.gnome.system.proxy", "mode"); err == nil {
+	if remote {
+		// 远程主机没有本程序的桌面会话，gsettings 读不到有意义的值。
+	} else if mode, err := run("gsettings", "get", "org.gnome.system.proxy", "mode"); err == nil {
 		info.GnomeMode = strings.Trim(strings.TrimSpace(mode), "'")
 		if info.GnomeMode == "manual" {
 			for _, sch := range []string{"http", "https", "socks"} {
@@ -122,7 +132,8 @@ func CollectProxy(links []Link, routing Routing, socks []Socket) ProxyInfo {
 		}
 	}
 
-	info.Processes = scanProcs(socks)
+	procs := newProcTable(sys)
+	info.Processes = scanProcs(procs, socks)
 	// 监听了代理端口但不在已知名单里的进程也算上。
 	for _, s := range info.Settings {
 		if s.PID == 0 {
@@ -135,7 +146,7 @@ func CollectProxy(links []Link, routing Routing, socks []Socket) ProxyInfo {
 			}
 		}
 		if !found {
-			info.Processes = append(info.Processes, procInfo(s.PID, s.Process, "proxy", socks))
+			info.Processes = append(info.Processes, procInfo(procs, s.PID, s.Process, "proxy", socks))
 		}
 	}
 
@@ -212,38 +223,29 @@ func isLocalHost(h string) bool {
 	return h == "localhost" || h == "::1" || strings.HasPrefix(h, "127.")
 }
 
-func scanProcs(socks []Socket) []ProxyProcess {
-	procs := []ProxyProcess{}
-	dirs, _ := filepath.Glob("/proc/[0-9]*")
-	for _, d := range dirs {
-		b, err := os.ReadFile(filepath.Join(d, "comm"))
-		if err != nil {
-			continue
-		}
-		comm := strings.TrimSpace(string(b))
+func scanProcs(procs *procTable, socks []Socket) []ProxyProcess {
+	out := []ProxyProcess{}
+	all := procs.all()
+	pids := make([]int, 0, len(all))
+	for pid := range all {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	for _, pid := range pids {
+		comm := all[pid]
 		kind, ok := knownProcs[comm]
 		if !ok {
 			continue
 		}
-		pid, _ := strconv.Atoi(filepath.Base(d))
-		procs = append(procs, procInfo(pid, comm, kind, socks))
+		out = append(out, procInfo(procs, pid, comm, kind, socks))
 	}
-	return procs
+	return out
 }
 
-func procInfo(pid int, name, kind string, socks []Socket) ProxyProcess {
+func procInfo(procs *procTable, pid int, name, kind string, socks []Socket) ProxyProcess {
 	p := ProxyProcess{PID: pid, Name: name, Kind: kind, Listens: []string{}}
-	d := filepath.Join("/proc", strconv.Itoa(pid))
-	if b, err := os.ReadFile(filepath.Join(d, "cmdline")); err == nil {
-		p.Cmdline = strings.TrimSpace(strings.ReplaceAll(string(b), "\x00", " "))
-	}
-	if st, err := os.Stat(d); err == nil {
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			p.User = strconv.Itoa(int(sys.Uid))
-			if u, err := user.LookupId(p.User); err == nil {
-				p.User = u.Username
-			}
-		}
+	if e, ok := procs.get(pid); ok {
+		p.Cmdline, p.User = e.cmdline, e.user
 	}
 	for _, s := range socks {
 		if s.PID == pid && (s.State == "LISTEN" || (s.Proto == "udp" && s.State == "UNCONN")) {
