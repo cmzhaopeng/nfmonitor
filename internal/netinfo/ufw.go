@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"os"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -102,11 +104,21 @@ func ParseUfwTuples(out string, ipv6 bool) []UfwRule {
 	if ipv6 {
 		rules = append(rules, v6...)
 	}
-	// 与 ufw 的 get_rule_by_number 一致：应用规则按 app tuple 去重后才计数。
+	numberRules(rules)
+	if rules == nil {
+		rules = []UfwRule{}
+	}
+	return rules
+}
+
+// numberRules 按 `ufw status numbered` 编号（rules 须是 v4 在前、v6 在后）。
+// 与 ufw 的 get_rule_by_number 一致：应用规则按 app tuple 去重后才计数。
+func numberRules(rules []UfwRule) {
 	seen := map[string]bool{}
 	n := 0
 	for i := range rules {
 		r := &rules[i]
+		r.Num = 0
 		if r.DApp != "" || r.SApp != "" {
 			k := r.appKey()
 			if seen[k] {
@@ -117,10 +129,6 @@ func ParseUfwTuples(out string, ipv6 bool) []UfwRule {
 		n++
 		r.Num = n
 	}
-	if rules == nil {
-		rules = []UfwRule{}
-	}
-	return rules
 }
 
 func parseUfwTuple(s string) (UfwRule, bool) {
@@ -294,10 +302,11 @@ func readShellVars(path string) map[string]string {
 
 // UfwOp 是前端提交的一次修改。
 type UfwOp struct {
-	Op        string   `json:"op"`                  // add | delete | replace | enable | disable | default | logging
+	Op        string   `json:"op"`                  // add | delete | replace | move | enable | disable | default | logging
 	Rule      *UfwRule `json:"rule,omitempty"`      // add / replace：新规则（只用其中的可编辑字段）
 	Position  int      `json:"position,omitempty"`  // add：插到第 N 条之前；0 = 追加到末尾
-	Old       *UfwRule `json:"old,omitempty"`       // delete / replace：现有规则，按 Route + Spec 定位
+	Old       *UfwRule `json:"old,omitempty"`       // delete / replace / move：现有规则，按 Route + Spec 定位
+	Before    *UfwRule `json:"before,omitempty"`    // move：移到这条规则之前；nil = 移到末尾
 	Direction string   `json:"direction,omitempty"` // default：incoming outgoing routed
 	Policy    string   `json:"policy,omitempty"`    // default：allow deny reject
 	Level     string   `json:"level,omitempty"`     // logging：off low medium high full
@@ -549,6 +558,8 @@ func BuildUfw(op UfwOp, cur []UfwRule, verify bool) ([][]string, error) {
 			return nil, err
 		}
 		return [][]string{ufwCmd(old.Route, []string{"delete"}, old.Spec)}, nil
+	case "move":
+		return planMove(cur, op.Old, op.Before)
 	case "add", "replace":
 		if op.Rule == nil {
 			return nil, errors.New("缺少规则")
@@ -602,24 +613,182 @@ func ApplyUfw(op UfwOp) (UfwResult, error) {
 		return res, fmt.Errorf("读取 ufw 规则失败: %w", err)
 	}
 	_, _, ipv6, _ := ReadUfwConfig()
-	cmds, err := BuildUfw(op, ParseUfwTuples(raw, ipv6), true)
+	cur := ParseUfwTuples(raw, ipv6)
+	cmds, err := BuildUfw(op, cur, true)
 	if err != nil {
 		return res, err
 	}
 	res.Commands = cmds
 	var out strings.Builder
-	for _, c := range cmds {
+	run := func(c []string) error {
 		o, err := Run(30*time.Second, c[0], c[1:]...)
 		out.WriteString("$ " + strings.Join(c, " ") + "\n" + o)
-		if err != nil {
+		if err == nil && strings.HasPrefix(strings.TrimSpace(o), "ERROR") {
+			err = errors.New(strings.TrimSpace(o))
+		}
+		return err
+	}
+	for i, c := range cmds {
+		if err := run(c); err != nil {
+			// 移动是先删后插：删掉之后插入失败，就把原规则追加回末尾，至少不丢规则。
+			if op.Op == "move" && i > 0 {
+				if old, ok := findRule(cur, op.Old); ok {
+					if rerr := run(ufwCmd(old.Route, nil, withComment(old))); rerr == nil {
+						err = fmt.Errorf("%w（原规则已追加回末尾，请检查顺序）", err)
+					} else {
+						err = fmt.Errorf("%w；恢复原规则也失败了: %v", err, rerr)
+					}
+				}
+			}
 			res.Output = out.String()
 			return res, err
-		}
-		if strings.HasPrefix(strings.TrimSpace(o), "ERROR") {
-			res.Output = out.String()
-			return res, errors.New(strings.TrimSpace(o))
 		}
 	}
 	res.Output, res.Executed = out.String(), true
 	return res, nil
+}
+
+// ---- 调整顺序 ----
+
+func groupKey(r UfwRule) string {
+	k := strings.Join(r.Spec, " ")
+	if r.Route {
+		k = "route " + k
+	}
+	return k
+}
+
+// ufwGroups 把 v4 / v6 各一条、spec 相同的规则归为一组（与界面上的一行对应），按首个序号排序。
+func ufwGroups(rules []UfwRule) (order []string, byKey map[string][]UfwRule) {
+	byKey = map[string][]UfwRule{}
+	first := map[string]int{}
+	for _, r := range rules {
+		k := groupKey(r)
+		if _, ok := byKey[k]; !ok {
+			order = append(order, k)
+			first[k] = 1 << 30
+		}
+		byKey[k] = append(byKey[k], r)
+		if r.Num > 0 && r.Num < first[k] {
+			first[k] = r.Num
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return first[order[i]] < first[order[j]] })
+	return
+}
+
+// planMove 把一组规则（含 v4、v6 两份）移到另一组之前。ufw 没有"移动"命令，只能先删再插；
+// v4、v6 是两张独立的表，序号也分开算，所以把两份分别用显式的 0.0.0.0/0、::/0 插回各自表里
+// 合适的位置。整个过程在内存里模拟一遍算出每一步的序号，预览与执行用的是同一份命令。
+// 规则的优先级只在同一方向（入站 / 出站 / 转发）、同一 IP 版本内有意义，其余相对顺序不影响匹配。
+func planMove(cur []UfwRule, old, before *UfwRule) ([][]string, error) {
+	if old == nil || len(old.Spec) == 0 {
+		return nil, errors.New("缺少要移动的规则")
+	}
+	order, groups := ufwGroups(cur)
+	gk := groupKey(*old)
+	g, ok := groups[gk]
+	if !ok {
+		return nil, errors.New("规则已经变化，找不到要移动的那一条，请刷新后重试")
+	}
+	if g[0].DApp != "" || g[0].SApp != "" {
+		return nil, errors.New("应用配置（app）规则请用命令行调整顺序")
+	}
+	bk := ""
+	if before != nil {
+		bk = groupKey(*before)
+		if _, ok := groups[bk]; !ok {
+			return nil, errors.New("目标位置的规则已经变化，请刷新后重试")
+		}
+		if bk == gk {
+			return nil, errors.New("位置没有变化")
+		}
+	}
+	// 目标之后（含目标）的各组，按顺序；移动的组本身除外。
+	var after []string
+	if bk != "" {
+		for i, k := range order {
+			if k == bk {
+				for _, k2 := range order[i:] {
+					if k2 != gk {
+						after = append(after, k2)
+					}
+				}
+				break
+			}
+		}
+	}
+	if pos := slices.Index(order, gk); pos >= 0 {
+		next := ""
+		if pos+1 < len(order) {
+			next = order[pos+1]
+		}
+		if next == bk {
+			return nil, errors.New("位置没有变化")
+		}
+	}
+
+	var v4, v6 []UfwRule
+	var mv4, mv6 *UfwRule
+	for _, r := range cur {
+		r := r
+		switch {
+		case groupKey(r) == gk && r.V6:
+			mv6 = &r
+		case groupKey(r) == gk:
+			mv4 = &r
+		case r.V6:
+			v6 = append(v6, r)
+		default:
+			v4 = append(v4, r)
+		}
+	}
+	renumber := func() []UfwRule {
+		all := append(append([]UfwRule{}, v4...), v6...)
+		numberRules(all)
+		copy(v4, all[:len(v4)])
+		copy(v6, all[len(v4):])
+		return all
+	}
+	renumber()
+	cmds := [][]string{ufwCmd(g[0].Route, []string{"delete"}, g[0].Spec)}
+	place := func(list *[]UfwRule, m UfwRule, isV6 bool) {
+		// 目标在这张表里的位置：目标组（或其后第一个在这张表里有规则的组）的那一条之前。
+		idx := -1
+		for _, k := range after {
+			for i, r := range *list {
+				if groupKey(r) == k {
+					idx = i
+					break
+				}
+			}
+			if idx >= 0 {
+				break
+			}
+		}
+		fam := m
+		if fam.Src == "any" && fam.Dst == "any" {
+			fam.Src = map[bool]string{false: "0.0.0.0/0", true: "::/0"}[isV6]
+		}
+		body := fam.specArgs(true)
+		if m.Comment != "" {
+			body = append(body, "comment", m.Comment)
+		}
+		var pre []string
+		if idx >= 0 {
+			pre = []string{"insert", strconv.Itoa((*list)[idx].Num)}
+			*list = slices.Insert(*list, idx, m)
+		} else {
+			*list = append(*list, m)
+		}
+		cmds = append(cmds, ufwCmd(m.Route, pre, body))
+		renumber()
+	}
+	if mv4 != nil {
+		place(&v4, *mv4, false)
+	}
+	if mv6 != nil {
+		place(&v6, *mv6, true)
+	}
+	return cmds, nil
 }

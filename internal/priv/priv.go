@@ -195,7 +195,12 @@ func (c *Client) ApplyUfw(op netinfo.UfwOp) (netinfo.UfwResult, error) {
 		if err != nil {
 			return netinfo.UfwResult{}, err
 		}
-		return netinfo.UfwResult{Commands: cmds, Output: "（样例模式：未执行）"}, nil
+		var out strings.Builder
+		for _, c := range cmds {
+			out.WriteString("$ " + strings.Join(c, " ") + "\n")
+		}
+		out.WriteString("（样例模式：以上命令未执行）")
+		return netinfo.UfwResult{Commands: cmds, Output: out.String()}, nil
 	}
 	if os.Geteuid() == 0 {
 		return netinfo.ApplyUfw(op)

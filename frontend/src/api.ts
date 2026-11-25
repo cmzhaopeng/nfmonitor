@@ -64,8 +64,8 @@ export interface UfwInfo {
   ipv6: boolean; rules: UfwRule[]; rulesError?: string
 }
 export interface UfwOp {
-  op: 'add' | 'delete' | 'replace' | 'enable' | 'disable' | 'default' | 'logging'
-  rule?: Partial<UfwRule>; position?: number; old?: UfwRule; direction?: string; policy?: string; level?: string
+  op: 'add' | 'delete' | 'replace' | 'move' | 'enable' | 'disable' | 'default' | 'logging'
+  rule?: Partial<UfwRule>; position?: number; old?: UfwRule; before?: UfwRule; direction?: string; policy?: string; level?: string
 }
 export interface UfwResult { commands: string[][]; output: string; executed: boolean }
 export interface Firewall {

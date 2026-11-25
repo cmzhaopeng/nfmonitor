@@ -82,7 +82,7 @@ func TestNormalizeUfwRule(t *testing.T) {
 		{Action: "allow", Dir: "up"},
 		{Action: "allow", Dir: "in", Src: "10.0.0.300"},
 		{Action: "allow", Dir: "in", Src: "10.0.0.1", Dst: "::1"},
-		{Action: "allow", Dir: "in", DPort: "80,443"},             // 多端口要指定协议
+		{Action: "allow", Dir: "in", DPort: "80,443"},              // 多端口要指定协议
 		{Action: "allow", Dir: "in", Proto: "tcp", DPort: "70000"}, // 超范围
 		{Action: "allow", Dir: "in", Proto: "tcp", DPort: "22; rm -rf /"},
 		{Action: "allow", Dir: "in", Proto: "esp", DPort: "22"},
@@ -151,6 +151,72 @@ func TestBuildUfw(t *testing.T) {
 	for _, op := range []UfwOp{{Op: "default", Direction: "incoming", Policy: "drop"}, {Op: "logging", Level: "debug"}, {Op: "reset"}} {
 		if _, err := BuildUfw(op, cur, true); err == nil {
 			t.Errorf("%+v accepted", op)
+		}
+	}
+}
+
+func TestPlanMove(t *testing.T) {
+	cur := fixtureRules(t)
+	byNum := func(n int) *UfwRule {
+		for i := range cur {
+			if cur[i].Num == n {
+				return &cur[i]
+			}
+		}
+		t.Fatalf("no rule %d", n)
+		return nil
+	}
+	join := func(cs [][]string) string {
+		var s []string
+		for _, c := range cs {
+			s = append(s, strings.Join(c, " "))
+		}
+		return strings.Join(s, " ; ")
+	}
+	cases := []struct {
+		name        string
+		old, before int // before=0 → 末尾
+		want        string
+	}{
+		// v4+v6 的组移到最前：v4 插到 #1，v6 插到 v6 表里原来排在它后面的第一条（lxcbr0 的 v6）之前。
+		{"twin to top", 3, 1,
+			"ufw --force delete allow in proto tcp from any to any port 80,443 ; " +
+				"ufw insert 1 allow in proto tcp from 0.0.0.0/0 to any port 80,443 ; " +
+				"ufw insert 10 allow in proto tcp from ::/0 to any port 80,443"},
+		{"twin to end", 4, 0,
+			"ufw --force delete allow in on lxcbr0 from any to any ; " +
+				"ufw allow in on lxcbr0 from 0.0.0.0/0 to any ; ufw allow in on lxcbr0 from ::/0 to any"},
+		{"v4 down one, keeps comment", 1, 3,
+			"ufw --force delete allow in proto tcp from 192.168.1.0/24 to any port 22 ; " +
+				"ufw insert 2 allow in proto tcp from 192.168.1.0/24 to any port 22 comment SSH from LAN"},
+		{"v6 only up", 14, 3,
+			"ufw --force delete allow in proto tcp from fd7a:115c:a1e0::/48 to any port 3389 ; " +
+				"ufw insert 10 allow in proto tcp from fd7a:115c:a1e0::/48 to any port 3389 comment RDP-v6"},
+		{"route rule", 6, 5,
+			"ufw --force route delete allow out on lxcbr0 from any to any ; " +
+				"ufw route insert 5 allow out on lxcbr0 from 0.0.0.0/0 to any"},
+	}
+	for _, c := range cases {
+		op := UfwOp{Op: "move", Old: byNum(c.old)}
+		if c.before > 0 {
+			op.Before = byNum(c.before)
+		}
+		got, err := BuildUfw(op, cur, true)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if join(got) != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, join(got), c.want)
+		}
+	}
+	for _, c := range []struct{ old, before int }{{14, 0}, {1, 2}, {3, 3}, {9, 1}} { // 已在末尾 / 已在目标前 / 自己 / app 规则
+		op := UfwOp{Op: "move", Old: byNum(c.old)}
+		if c.before > 0 {
+			op.Before = byNum(c.before)
+		}
+		if _, err := BuildUfw(op, cur, true); err == nil {
+			t.Errorf("move %d before %d: expected error", c.old, c.before)
 		}
 	}
 }
