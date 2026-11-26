@@ -20,10 +20,10 @@ func TestParseUfwTuples(t *testing.T) {
 		t.Fatalf("got %d rules", len(rs))
 	}
 	r := rs[0]
-	if r.Num != 1 || r.Action != "allow" || r.Proto != "tcp" || r.DPort != "22" || r.Src != "192.168.1.0/24" || r.Dst != "any" || r.Comment != "SSH from office" || r.V6 {
+	if r.Num != 1 || r.Action != "allow" || r.Proto != "tcp" || r.DPort != "22" || r.Src != "192.0.2.0/24" || r.Dst != "any" || r.Comment != "SSH from office" || r.V6 {
 		t.Errorf("rule 1 = %+v", r)
 	}
-	if got := strings.Join(r.Spec, " "); got != "allow in proto tcp from 192.168.1.0/24 to any port 22" {
+	if got := strings.Join(r.Spec, " "); got != "allow in proto tcp from 192.0.2.0/24 to any port 22" {
 		t.Errorf("spec 1 = %q", got)
 	}
 	if rs[1].Action != "limit" || rs[1].Comment != "SSH 来自 VPN" {
@@ -120,8 +120,8 @@ func TestBuildUfw(t *testing.T) {
 			"ufw route insert 1 allow in on docker0 from any to any"},
 		{UfwOp{Op: "delete", Old: &cur[4]}, "ufw --force route delete allow in on br0 from any to any"},
 		// 只改动作 / 备注 → 原地更新
-		{UfwOp{Op: "replace", Old: &cur[0], Rule: &UfwRule{Action: "limit", Dir: "in", Proto: "tcp", DPort: "22", Src: "192.168.1.0/24", Comment: "SSH from office"}},
-			"ufw limit in proto tcp from 192.168.1.0/24 to any port 22 comment SSH from office"},
+		{UfwOp{Op: "replace", Old: &cur[0], Rule: &UfwRule{Action: "limit", Dir: "in", Proto: "tcp", DPort: "22", Src: "192.0.2.0/24", Comment: "SSH from office"}},
+			"ufw limit in proto tcp from 192.0.2.0/24 to any port 22 comment SSH from office"},
 		// 改了匹配条件 → 原位置插入新的，再删旧的
 		{UfwOp{Op: "replace", Old: &cur[2], Rule: &UfwRule{Action: "allow", Dir: "in", Proto: "tcp", DPort: "80,443,8443"}},
 			"ufw insert 3 allow in proto tcp from any to any port 80,443,8443 ; ufw --force delete allow in proto tcp from any to any port 80,443"},
@@ -145,7 +145,7 @@ func TestBuildUfw(t *testing.T) {
 		t.Error("forged delete accepted")
 	}
 	same := cur[0]
-	if _, err := BuildUfw(UfwOp{Op: "replace", Old: &same, Rule: &UfwRule{Action: "allow", Dir: "in", Proto: "tcp", DPort: "22", Src: "192.168.1.0/24", Comment: "SSH from office"}}, cur, true); err == nil {
+	if _, err := BuildUfw(UfwOp{Op: "replace", Old: &same, Rule: &UfwRule{Action: "allow", Dir: "in", Proto: "tcp", DPort: "22", Src: "192.0.2.0/24", Comment: "SSH from office"}}, cur, true); err == nil {
 		t.Error("no-op replace should error")
 	}
 	for _, op := range []UfwOp{{Op: "default", Direction: "incoming", Policy: "drop"}, {Op: "logging", Level: "debug"}, {Op: "reset"}} {
@@ -187,8 +187,8 @@ func TestPlanMove(t *testing.T) {
 			"ufw --force delete allow in on br0 from any to any ; " +
 				"ufw allow in on br0 from 0.0.0.0/0 to any ; ufw allow in on br0 from ::/0 to any"},
 		{"v4 down one, keeps comment", 1, 3,
-			"ufw --force delete allow in proto tcp from 192.168.1.0/24 to any port 22 ; " +
-				"ufw insert 2 allow in proto tcp from 192.168.1.0/24 to any port 22 comment SSH from office"},
+			"ufw --force delete allow in proto tcp from 192.0.2.0/24 to any port 22 ; " +
+				"ufw insert 2 allow in proto tcp from 192.0.2.0/24 to any port 22 comment SSH from office"},
 		{"v6 only up", 14, 3,
 			"ufw --force delete allow in proto tcp from 2001:db8:a::/48 to any port 3389 ; " +
 				"ufw insert 10 allow in proto tcp from 2001:db8:a::/48 to any port 3389 comment RDP-test"},

@@ -1,0 +1,54 @@
+# 虚构的示例数据，仅供开发调试（NFMONITOR_FIXTURE_DIR），不来自任何真实主机。
+table ip filter { # handle 1
+	chain INPUT { # handle 1
+		type filter hook input priority filter; policy drop;
+		counter packets 1000 bytes 80000 jump ufw-before-input # handle 10
+		counter packets 100 bytes 6000 jump ufw-user-input # handle 11
+	}
+
+	chain FORWARD { # handle 2
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump DOCKER-USER # handle 20
+		oifname "docker0" ct state related,established counter packets 0 bytes 0 accept # handle 21
+		oifname "docker0" counter packets 0 bytes 0 jump DOCKER # handle 22
+	}
+
+	chain OUTPUT { # handle 3
+		type filter hook output priority filter; policy accept;
+	}
+
+	chain ufw-before-input { # handle 4
+		iifname "lo" counter packets 500 bytes 40000 accept # handle 30
+		ct state related,established counter packets 400 bytes 32000 accept # handle 31
+		ct state invalid counter packets 5 bytes 300 drop # handle 32
+		ip protocol icmp icmp type echo-request counter packets 3 bytes 252 accept # handle 33
+	}
+
+	chain ufw-user-input { # handle 5
+		tcp dport 22 counter packets 10 bytes 600 accept comment "ssh" # handle 40
+		ip saddr 192.0.2.0/24 tcp dport 5432 counter packets 2 bytes 120 accept # handle 41
+		tcp dport 8080 counter packets 1 bytes 60 drop # handle 42
+	}
+
+	chain DOCKER { # handle 6
+	}
+
+	chain DOCKER-USER { # handle 7
+		counter packets 0 bytes 0 return # handle 50
+	}
+}
+table ip nat { # handle 2
+	chain PREROUTING { # handle 1
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 0 bytes 0 jump DOCKER # handle 5
+	}
+
+	chain POSTROUTING { # handle 2
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 172.17.0.0/16 oifname != "docker0" counter packets 0 bytes 0 masquerade # handle 6
+	}
+
+	chain DOCKER { # handle 3
+		iifname "docker0" counter packets 0 bytes 0 return # handle 7
+	}
+}
