@@ -220,6 +220,8 @@ scripts/dev-serve.sh --fixture    # 用 testdata/fixture/ 里的样例代替 roo
 - `NFMONITOR_DEBUG=1`：把每个接口请求打印到 stderr。
 - `NFMONITOR_FIXTURE_DIR=<目录>`：从 `<目录>/<命令名>.txt` 读取「root 输出」，不提权也能调试防火墙界面。
 
+`testdata/` 里只放虚构数据（IP 用 192.0.2.0/24 这类文档地址）。要拿本机真实输出调试，放到仓库里的 `local/` 目录（已在 `.gitignore` 里，不会被提交），例如 `NFMONITOR_FIXTURE_DIR=$PWD/local/fixture`。主机清单、密钥、证书、`.env` 等也已在 `.gitignore` 里忽略。
+
 ### 结构
 
 - `internal/netinfo/`：采集层，全部通过解析系统工具的输出实现。

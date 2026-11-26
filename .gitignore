@@ -2,3 +2,28 @@ build/
 frontend/dist/
 frontend/node_modules/
 dist/
+
+# 本机真实配置和机密，一律不提交（测试、样例只用虚构数据）。
+# 本机的真实防火墙输出、主机清单等放 local/ 目录。
+local/
+.env
+.env.*
+!.env.example
+# 程序读写的配置与数据：主机清单、账号、口令库密钥、审计日志
+hosts.json
+users.json
+secret.key
+audit.log
+audit.log.*
+# 主密钥 / 证书 / SSH 私钥（docker-compose 的主密钥放 secrets/）
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+# 本机工具配置
+.claude/settings.local.json*
