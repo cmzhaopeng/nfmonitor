@@ -1,0 +1,95 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+      - name: Go vet and test
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Windows cross-compile vet
+        run: GOOS=windows go vet -tags desktop,production ./...
+
+  windows-client:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build nfmonitor.exe
+        run: |
+          GOARCH=amd64 scripts/build-windows.sh
+          GOARCH=arm64 scripts/build-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfmonitor-windows
+          path: build/bin/nfmonitor-windows-*.exe
+          if-no-files-found: error
+
+  windows-smoke:
+    # 在真实 Windows 上确认 exe 能启动（version 子命令，不打开窗口）。
+    needs: windows-client
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nfmonitor-windows
+          path: bin
+      - name: Start exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath bin\nfmonitor-windows-amd64.exe -ArgumentList version -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+  server:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build server binaries
+        run: |
+          GOARCH=amd64 scripts/build-server.sh
+          GOARCH=arm64 scripts/build-server.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfmonitor-server-linux
+          path: build/bin/nfmonitor-server-linux-*
+          if-no-files-found: error
+      - name: Build Docker image (not pushed)
+        run: docker build -t nfmonitor:ci .

@@ -86,24 +86,53 @@ export interface Meta {
   remote: boolean; host?: string; name?: string; kernel?: string; rootErr?: string; error?: string
 }
 
+// ---- 运行方式与登录 ----
+/** desktop：桌面窗口；serve：本机网页；server：服务器版（要登录，只看纳管主机）。local=false 时没有「本机」。 */
+export interface Session {
+  mode: 'desktop' | 'serve' | 'server'; local: boolean; version: string
+  user?: string; role?: 'admin' | 'viewer'; canWrite: boolean; idleMinutes?: number
+}
+let session: Session | null = null
+export const setSession = (s: Session | null) => { session = s }
+export const isServer = () => session?.mode === 'server'
+export const hasLocal = () => session?.local !== false
+/** 当前账号能否修改（服务器版的只读账号为 false；其他模式总是 true）。 */
+export const canWrite = () => session?.canWrite !== false
+
+/** 未登录 / 登录过期（服务器版）。 */
+export class LoginError extends Error { login = true }
+let onLoginNeeded: (() => void) | null = null
+export const setLoginHandler = (fn: (() => void) | null) => { onLoginNeeded = fn }
+/** 危险操作要求再次输入口令：由界面弹框，确认后返回 true，接口会自动重发。 */
+let onReauth: (() => Promise<boolean>) | null = null
+export const setReauthHandler = (fn: (() => Promise<boolean>) | null) => { onReauth = fn }
+
 // ---- 当前查看的主机 ----
 // 所有采集 / 修改接口都带上 ?host=<id>；空串 = 本机。界面切换主机时整棵组件树按 key 重建。
 let currentHost = ''
 export const setApiHost = (id: string) => { currentHost = id }
 export const isRemote = () => currentHost !== ''
+const NO_HOST = ['/api/hosts', '/api/fleet', '/api/session', '/api/auth/', '/api/audit']
 function withHost(url: string) {
-  if (!currentHost || !url.startsWith('/api/') || url.startsWith('/api/hosts')) return url
+  if (!currentHost || !url.startsWith('/api/') || NO_HOST.some(p => url.startsWith(p))) return url
   return url + (url.includes('?') ? '&' : '?') + 'host=' + encodeURIComponent(currentHost)
 }
 
 /** 接口返回 409 + lockout：这次修改可能切断远程主机的 SSH 连接，需要用户确认后带 confirm 重发。 */
 export class LockoutError extends Error { lockout = true }
 
-export async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function getJSON<T>(url: string, init?: RequestInit, retried = false): Promise<T> {
   const res = await fetch(withHost(url), init)
   const body = await res.json().catch(() => null)
   if (!res.ok) {
     const msg = body?.error || `${url}: HTTP ${res.status}`
+    if (res.status === 401 && body?.login) {
+      onLoginNeeded?.()
+      throw new LoginError(msg)
+    }
+    if (res.status === 403 && body?.reauth && !retried && onReauth && await onReauth()) {
+      return getJSON<T>(url, init, true)
+    }
     throw body?.lockout ? new LockoutError(msg) : new Error(msg)
   }
   return body as T
@@ -120,6 +149,35 @@ export const ufwPreview = (op: UfwOp) => postJSON<UfwResult>('/api/ufw/preview',
 export const ufwApply = (op: UfwOp & {confirm?: boolean}) => postJSON<UfwResult>('/api/ufw/apply', op)
 export const firewalldPreview = (op: FirewalldOp) => postJSON<UfwResult>('/api/firewalld/preview', op)
 export const firewalldApply = (op: FirewalldOp) => postJSON<UfwResult>('/api/firewalld/apply', op)
+
+export const getSession = () => getJSON<Session>('/api/session')
+export const login = (user: string, password: string) => postJSON<{user: string; role: string}>('/api/auth/login', {user, password})
+export const logout = () => postJSON<{ok: boolean}>('/api/auth/logout', {})
+export const reauth = (password: string) => postJSON<{ok: boolean}>('/api/auth/reauth', {password})
+
+// ---- 所有主机总览 ----
+export interface Finding { level: 'crit' | 'warn' | 'info'; text: string }
+export interface ExposedPort { proto: string; addr: string; port: number; process: string }
+export interface FleetHost {
+  id: string; name: string; addr: string; state: 'ok' | 'error' | 'disconnected' | 'timeout'; error?: string
+  hostname: string; kernel?: string; priv: string
+  net?: {
+    ifaces: number; upIfaces: number; addrs: string[]; rxRate: number; txRate: number
+    estab: number; listens: number; exposed: ExposedPort[]; topPeers: {peer: string; conns: number}[]
+  }
+  fw?: {
+    privileged: boolean; ufw: string; ufwIncoming?: string; ufwRules: number; firewalld: string; firewalldZone?: string
+    backend: string; tables: number; rules: number; inputPolicy: string; inputFiltering: boolean
+  }
+  findings: Finding[]; tookMs: number; time: number
+}
+export interface FleetReport { time: number; hosts: FleetHost[] }
+
+// ---- 审计日志（服务器版，管理员）----
+export interface AuditEntry {
+  time: string; user?: string; ip?: string; action: string; host?: string; hostName?: string
+  result: 'ok' | 'error' | 'denied'; error?: string; detail?: Record<string, unknown>
+}
 
 // ---- 远程主机 ----
 export type AuthKind = 'password' | 'key' | 'agent'

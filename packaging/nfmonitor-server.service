@@ -1,0 +1,53 @@
+# systemd 单元：服务器版。安装见 README「服务器版 → systemd」。
+#   sudo install -m755 nfmonitor-server-linux-amd64 /usr/local/bin/nfmonitor
+#   sudo useradd --system --home-dir /var/lib/nfmonitor --shell /usr/sbin/nologin nfmonitor
+#   sudo install -d -m700 /etc/nfmonitor && nfmonitor server genkey | sudo tee /etc/nfmonitor/master.key >/dev/null && sudo chmod 400 /etc/nfmonitor/master.key
+#   sudo install -m644 nfmonitor-server.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now nfmonitor-server
+[Unit]
+Description=nfmonitor server (centralized network and firewall monitoring)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nfmonitor
+Group=nfmonitor
+# 数据目录：/var/lib/nfmonitor（主机配置、账号、审计日志），权限 700
+StateDirectory=nfmonitor
+StateDirectoryMode=0700
+Environment=NFMONITOR_DATA=/var/lib/nfmonitor
+# 主密钥由 systemd 以只读凭据交给服务，不放在数据目录里
+LoadCredential=master.key:/etc/nfmonitor/master.key
+# 默认只监听本机，由 nginx / Caddy 做 HTTPS（见 packaging/nginx-nfmonitor.conf）。
+# 直接对外提供 HTTPS：改成 -addr 0.0.0.0:8443 -tls-cert ... -tls-key ...（证书文件也可以用 LoadCredential 传入）
+ExecStart=/usr/local/bin/nfmonitor server -addr 127.0.0.1:8787 -behind-proxy -key-file ${CREDENTIALS_DIRECTORY}/master.key
+Restart=on-failure
+RestartSec=5
+
+# 加固：服务只需要读写数据目录、对外发起 SSH 连接
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -303,3 +303,10 @@ pre.raw.cmd { padding: 8px 10px; max-height: 200px; white-space: pre-wrap; overf
 .zone-item button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 12px; }
 .zone-item button:hover { color: var(--crit); }
 .zone-grid { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 12px; align-items: baseline; }
+
+/* 登录页（服务器版） */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--page); }
+.login { width: 100%; max-width: 360px; padding: 24px; }
+.login .field { display: grid; gap: 4px; margin-bottom: 10px; }
+.login .field input { width: 100%; }
+.side-foot .who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

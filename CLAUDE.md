@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-nfmonitor — 本机与远程主机（SSH）网络流量与规则的图形化查看工具（Go + Wails v2 + React/TS/Vite）。
+nfmonitor — 本机与远程主机（SSH）网络流量与规则的图形化查看工具（Go + Wails v2 + React/TS/Vite）。三种形态：Linux 桌面版、Windows 客户端（只管远程主机）、服务器版 `nfmonitor server`（多用户、登录、审计，集中监控所有纳管主机）。
 展示网卡、路由 / 策略路由、代理与 TUN、nftables / iptables / ufw 规则、套接字与按进程流量。除 ufw / firewalld 页外**只读**，不修改任何系统状态；修改只经结构化的 `UfwOp` / `FirewalldOp`、在 root 侧校验（见下）。
 
 ## 构建与运行
@@ -13,9 +13,13 @@ build/bin/nfmonitor dump /api/links   # 进程内调一次接口，打印 JSON�
 scripts/dev-serve.sh [--fixture] # 重建并以网页模式启动；--fixture 用样例代替 root 数据
 go test ./internal/...           # 解析器测试 + 内置 SSH 服务器的远程采集端到端测试（internal/remote）
 scripts/package.sh               # deb + rpm → dist/（含 .desktop、图标、polkit 策略）
+scripts/build-windows.sh         # 交叉编译 Windows 客户端（-tags desktop,production，无 cgo）
+scripts/build-server.sh          # 服务器版：不带 desktop 标签、CGO_ENABLED=0 的静态二进制
+docker build -t nfmonitor .      # 服务器版镜像（distroless，入口 nfmonitor server）
 ```
 
-- 本机 `go build` 必须带 `-tags desktop,production,webkit2_41`；`frontend/dist` 是 `go:embed` 的，先构建前端。
+- 桌面窗口在 `desktop.go`（`//go:build desktop`）；Linux 桌面版 `go build` 带 `-tags desktop,production,webkit2_41`，Windows 带 `-tags desktop,production`。不带 `desktop` 时（`nodesktop.go`）没有窗口，只有 `serve` / `server` 等子命令，不依赖 GTK/WebKit。`frontend/dist` 是 `go:embed` 的，先构建前端。
+- CI：`.github/workflows/build.yml`（测试、Windows exe 和服务器二进制作为 Artifacts、docker build 不推送）。
 - 前端热更新：先跑 `nfmonitor serve`，再 `cd frontend && npm run dev`（vite 把 `/api` 代理到 8787）。
 - `NFMONITOR_DEBUG=1`：把每个接口请求打到 stderr。`NFMONITOR_FIXTURE_DIR=<dir>`：从 `<dir>/<命令名>.txt` 读"root 输出"，不提权也能调防火墙界面（样例在 `testdata/fixture/`）。
 
@@ -30,7 +34,10 @@ scripts/package.sh               # deb + rpm → dist/（含 .desktop、图标�
 - 防失联（`lockout.go`、`firewalld.go`）：连上后用 `$SSH_CONNECTION` + `ip addr show to` 得到 `SSHPath`；修改 ufw / firewalld 前在内存里模拟修改前后（ufw 首条命中、firewalld 区域选择 + rich rule），修改后不再放行就给 `Warning`；apply 时没带 `confirm` 返回 `ErrLockout`（接口 409 `{lockout:true}`）。修改前本来就判断为不放行、或连接来自本机（lo）时不警告。
 - firewalld：读 `firewall-cmd --state / --get-default-zone / --list-all-zones / --get-services`（PrivCommands），`BuildFirewalld` 校验后生成运行时 + `--permanent` 两条命令；本机经 helper 的 `{"firewalld": op}` 请求在 root 侧执行。
 - `internal/api/` 一个 `http.Handler`，桌面版挂在 Wails `AssetServer.Handler` 上，`serve` 模式挂在普通 HTTP 服务上——前端在两种模式下都只用 `fetch('/api/...')`，没有 Wails 绑定。采集 / 修改接口都接受 `?host=<id>`（缺省 = 本机），`/api/hosts*` 是主机管理（`hosts.go`）。serve 模式下带 `host=` 的请求和 `/api/hosts*` 都要求同一用户（`peerUID`）。
-- `frontend/src/`：`api.ts`（类型 + `usePoll`；`setApiHost` 设定当前主机，`getJSON` 自动给 `/api/*` 加 `host=`）、`rates.tsx`（每秒采样算速率，全局 context）、`pages/*`（八个页面 + `Firewalld.tsx` 面板）。`App` 切换主机时用 `key={host}` 重建整棵树，各页不用关心主机。
+- 平台：`netinfo.LocalSupported`（仅 Linux）。`api.Server.NoLocal` 为真时（Windows 客户端、服务器版）不带 `host=` 的采集请求返回 `netinfo.ErrNoLocal`，`/api/meta` 返回 `local:false`；`/api/session` 告诉前端运行方式（`mode`、`local`、`canWrite`）。`peerUID`、`syscall.Stat_t` 等 Linux 专有代码按 `_linux.go` / `_unix.go` 拆开，改动后用 `GOOS=windows go vet -tags desktop,production ./...` 检查。
+- `internal/api/fleet.go`「所有主机」：`GET /api/fleet` 并发（8 路、每台 30 秒超时）采集每台已纳管且没被手动断开的主机，汇总网络（网卡、地址、速率、连接、对外监听端口、主要对端）和安全策略（ufw / firewalld / nft 规则、入站默认策略），并生成 findings；结果缓存 15 秒，速率是相邻两次采集的差。
+- `internal/server/` 服务器版：`Gateway` 包在 `api.Server` 外面，处理登录（`/api/auth/*`）、会话（内存，只存令牌 SHA-256）、登录限速、角色（`adminPaths` 只有 admin 能调）、再次验证口令（`reauthPaths`，5 分钟窗口，接口 403 `{reauth:true}`）、`blockedPaths`（`/api/elevate`）、同源检查和安全头，并把每个修改请求（去掉 `scrub` 里的机密字段后）连同结果写审计日志（`audit.go`）。主密钥由 `keys.go` 从外部读入，经 `remote.OpenStoreWithKey` 使用（`hosts.json` 里的 `keyCheck` 用来发现密钥不对）；`Manager.ServerMode` 只允许口令 / 粘贴的私钥。账号在 `users.json`（bcrypt），命令行 `nfmonitor server user ...` 管理，服务运行中按文件修改时间重新读取。
+- `frontend/src/`：`api.ts`（类型 + `usePoll`；`setApiHost` 设定当前主机，`getJSON` 自动给 `/api/*` 加 `host=`；遇到 401 `login` 切到登录页、403 `reauth` 弹框后自动重发）、`rates.tsx`（每秒采样算速率，全局 context）、`pages/*`（各页面 + `Firewalld.tsx` 面板；`Fleet.tsx` 所有主机、`Audit.tsx` 审计、`Login.tsx` 登录）。`App` 启动先取 `/api/session`，没有本机时默认进「所有主机」，`canWrite()` 为假时隐藏 / 禁用修改操作。`App` 切换主机时用 `key={host}` 重建整棵树，各页不用关心主机。
 
 ## 约定
 

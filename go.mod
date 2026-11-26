@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/wailsapp/wails/v2 v2.13.0
 	golang.org/x/crypto v0.51.0
+	golang.org/x/term v0.43.0
 )
 
 require (
