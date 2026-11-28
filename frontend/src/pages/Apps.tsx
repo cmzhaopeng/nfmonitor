@@ -10,6 +10,36 @@ const rate = (x: {rxRate: number; txRate: number}) => x.rxRate + x.txRate
 const appLabel = (n: string) => n || '未知（其他用户的进程）'
 const ifKey = (i: AppIface) => i.dev + '|' + i.via
 
+// 表头排序：null = 自动（按当前速率）；点表头依次切换 降序 → 升序 → 自动（名称列先升序）。
+type SortKey = 'name' | 'conns' | 'rx' | 'tx' | 'rxTotal' | 'txTotal'
+type Sort = {key: SortKey; desc: boolean} | null
+type Row = {conns: number; rxRate: number; txRate: number; rxTotal: number; txTotal: number}
+const sortVal: Record<Exclude<SortKey, 'name'>, (x: Row) => number> = {
+  conns: x => x.conns, rx: x => x.rxRate, tx: x => x.txRate, rxTotal: x => x.rxTotal, txTotal: x => x.txTotal,
+}
+/** 按用户选的列比较；数值相同时按名称，保证顺序稳定。 */
+function cmpBy(s: Exclude<Sort, null>, a: Row, an: string, b: Row, bn: string) {
+  const byName = appLabel(an).localeCompare(appLabel(bn))
+  if (s.key === 'name') return s.desc ? -byName : byName
+  const d = sortVal[s.key](a) - sortVal[s.key](b)
+  return (s.desc ? -d : d) || byName
+}
+function nextSort(cur: Sort, key: SortKey): Sort {
+  const first = key !== 'name'
+  if (!cur || cur.key !== key) return {key, desc: first}
+  return cur.desc === first ? {key, desc: !first} : null
+}
+
+function SortTh({k, sort, setSort, right, children}: {k: SortKey; sort: Sort; setSort: (s: Sort) => void; right?: boolean; children: React.ReactNode}) {
+  const on = sort?.key === k
+  return (
+    <th className={'sortable' + (right ? ' right' : '') + (on ? ' on' : '')} aria-sort={on ? (sort!.desc ? 'descending' : 'ascending') : 'none'}
+      title="点击排序：降序 → 升序 → 自动" onClick={() => setSort(nextSort(sort, k))}>
+      {children}<span className="sort-ind">{on ? (sort!.desc ? '▼' : '▲') : ''}</span>
+    </th>
+  )
+}
+
 /** 网卡标签：回环连到本机另一个程序时写成「lo → gost」。 */
 export function IfaceTag({i}: {i: {dev: string; via: string}}) {
   return <span className="tag" title={i.via ? `回环连接，对端是本机的 ${i.via}` : undefined}>{i.dev || '未知网卡'}{i.via && <> → {i.via}</>}</span>
@@ -76,6 +106,7 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
   const [q, setQ] = useState('')
   const [onlyActive, setOnlyActive] = useState(false)
   const [open, setOpen] = useState<string | null>(null)
+  const [sort, setSort] = useState<Sort>(null)
   const socks = usePoll<Socket[]>(open != null ? '/api/sockets' : '/api/meta', open != null ? 3000 : 0)
   const hist = useRef<Map<string, number[]>>(new Map())
   const lastT = useRef(0)
@@ -92,7 +123,8 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
   const apps = useMemo(() => (data?.apps || [])
     .filter(a => !q || `${appLabel(a.name)} ${a.ifaces.map(i => i.dev + ' ' + i.via).join(' ')} ${a.procs.map(p => p.pid).join(' ')}`.toLowerCase().includes(q.toLowerCase()))
     .filter(a => !onlyActive || total(a) > 0 || rate(a) > 0)
-    .sort((a, b) => rate(b) - rate(a) || total(b) - total(a) || b.conns - a.conns || a.name.localeCompare(b.name)), [data, q, onlyActive])
+    .sort((a, b) => sort ? cmpBy(sort, a, a.name, b, b.name)
+      : rate(b) - rate(a) || total(b) - total(a) || b.conns - a.conns || a.name.localeCompare(b.name)), [data, q, onlyActive, sort])
 
   const devs = useMemo(() => {
     const m = new Map<string, {dev: string; rxRate: number; txRate: number; rxTotal: number; txTotal: number; conns: number; apps: {app: App; i: AppIface}[]}>()
@@ -103,9 +135,11 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
       d.rxRate += i.rxRate; d.txRate += i.txRate; d.rxTotal += i.rxTotal; d.txTotal += i.txTotal; d.conns += i.conns
       d.apps.push({app: a, i})
     }
-    for (const d of m.values()) d.apps.sort((x, y) => rate(y.i) - rate(x.i) || total(y.i) - total(x.i) || y.i.conns - x.i.conns)
+    for (const d of m.values()) d.apps.sort((x, y) => sort ? cmpBy(sort, x.i, x.app.name, y.i, y.app.name)
+      : rate(y.i) - rate(x.i) || total(y.i) - total(x.i) || y.i.conns - x.i.conns)
     return [...m.values()].sort((a, b) => total(b) - total(a) || b.conns - a.conns)
-  }, [apps])
+  }, [apps, sort])
+  const th = (k: SortKey, label: string, right = true) => <SortTh k={k} sort={sort} setSort={setSort} right={right}>{label}</SortTh>
   const unknown = (data?.apps || []).some(a => !a.name)
 
   return (
@@ -113,6 +147,7 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
       <div className="page-head">
         <div><h1>应用</h1><p>每个应用走哪块网卡、有多少流量。{udpOn ? '统计 TCP 和 UDP（含 QUIC）的载荷字节' : '目前只统计了 TCP'}，累计值从 {data ? new Date(data.since).toLocaleTimeString() : '…'} 开始监测起算</p></div>
         <span className="sp"/>
+        {sort && <button className="link" style={{fontFamily: "inherit"}} onClick={() => setSort(null)} title="恢复按当前速率自动排序">恢复自动排序</button>}
         <label className="dim"><input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)}/> 只看有流量的</label>
         <input type="search" placeholder="按应用 / 网卡 / PID 过滤" value={q} onChange={e => setQ(e.target.value)} style={{width: 200}}/>
         <div className="seg">
@@ -137,8 +172,8 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
 
       {view === 'app' && <div className="card tbl-wrap">
         <table>
-          <thead><tr><th>应用</th><th>使用的网卡</th><th className="right">连接</th>
-            <th className="right">下行</th><th className="right">上行</th><th>趋势</th><th className="right">累计收</th><th className="right">累计发</th></tr></thead>
+          <thead><tr>{th('name', '应用', false)}<th>使用的网卡</th>{th('conns', '连接')}
+            {th('rx', '下行')}{th('tx', '上行')}<th>趋势</th>{th('rxTotal', '累计收')}{th('txTotal', '累计发')}</tr></thead>
           <tbody>{apps.map(a => (
             <Fragment key={a.name}>
               <tr className={'clickable' + (open === a.name ? ' sel' : '') + (a.conns || rate(a) > 0 ? '' : ' off')} onClick={() => setOpen(open === a.name ? null : a.name)}>
@@ -171,7 +206,7 @@ export default function Apps({onPrivChange}: {onPrivChange: () => void}) {
               <span className="dim num">下行 {fmtRate(d.rxRate)} · 上行 {fmtRate(d.txRate)} · 累计收 {fmtBytes(d.rxTotal)} / 发 {fmtBytes(d.txTotal)}</span>
             </div>
             <div className="tbl-wrap"><table>
-              <thead><tr><th>应用</th><th>对端</th><th className="right">连接</th><th className="right">下行</th><th className="right">上行</th><th className="right">累计收</th><th className="right">累计发</th></tr></thead>
+              <thead><tr>{th('name', '应用', false)}<th>对端</th>{th('conns', '连接')}{th('rx', '下行')}{th('tx', '上行')}{th('rxTotal', '累计收')}{th('txTotal', '累计发')}</tr></thead>
               <tbody>{d.apps.map(({app, i}) => (
                 <tr key={app.name + ifKey(i)} className={i.conns || rate(i) > 0 ? '' : 'off'}>
                   <td>{app.name ? <b>{app.name}</b> : <span className="muted">{appLabel('')}</span>}</td>

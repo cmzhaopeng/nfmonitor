@@ -141,6 +141,9 @@ tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--surface-2); }
 th.right, td.right { text-align: right; }
 tr.clickable { cursor: pointer; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover, th.sortable.on { color: var(--text); }
+th .sort-ind { display: inline-block; width: 1em; font-size: 9px; text-align: center; }
 tr.sel td { background: var(--surface-2); }
 tr.off td { color: var(--muted); }
 
